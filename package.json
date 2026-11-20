@@ -1,7 +1,7 @@
 {
   "name": "s-browser",
   "productName": "S Browser",
-  "version": "1.4.0",
+  "version": "1.5.0",
   "description": "S Browser — изолированный браузер на Chromium, работающий только через прокси",
   "author": "S Browser",
   "repository": {
@@ -18,7 +18,8 @@
   },
   "devDependencies": {
     "electron": "^45.3.1",
-    "electron-builder": "^25.1.8"
+    "electron-builder": "^25.1.8",
+    "@electron/fuses": "^1.8.0"
   },
   "build": {
     "appId": "local.proxybrowser",
@@ -57,14 +58,6 @@
         "releaseType": "release"
       }
     ],
-    "electronFuses": {
-      "runAsNode": false,
-      "enableCookieEncryption": true,
-      "enableNodeOptionsEnvironmentVariable": false,
-      "enableNodeCliInspectArguments": false,
-      "enableEmbeddedAsarIntegrityValidation": true,
-      "onlyLoadAppFromAsar": true,
-      "grantFileProtocolExtraPrivileges": false
-    }
+    "afterPack": "build/after-pack.js"
   }
 }

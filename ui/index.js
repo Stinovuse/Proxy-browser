@@ -1,20 +1,35 @@
 'use strict';
 const $ = id => document.getElementById(id);
-const tabsEl = $('tabs'), addr = $('addr'), ipEl = $('ip');
+const tabsEl = $('tabs'), addr = $('addr'), ipEl = $('ip'), omni = $('omni');
 let state = [];
 let loading = false;
 
+const COLORS = ['#8b5cf6', '#3b82f6', '#06b6d4', '#10b981', '#f59e0b', '#ef4444', '#ec4899', '#6366f1'];
+function colorFor(s) { let h = 0; for (const c of String(s)) h = (h * 31 + c.charCodeAt(0)) >>> 0; return COLORS[h % COLORS.length]; }
+function hostOf(u) { try { return new URL(u).hostname.replace(/^www\./, ''); } catch { return ''; } }
+function letterBadge(host, cls) {
+  const s = document.createElement('span');
+  s.className = cls;
+  const c = colorFor(host || '?');
+  s.style.background = `linear-gradient(135deg, ${c}, ${c}aa)`;
+  s.textContent = (host[0] || '•').toUpperCase();
+  return s;
+}
+
+// ---------- Вкладки и адресная строка ----------
 function render() {
-  tabsEl.querySelectorAll('.tab').forEach(n => n.remove());
-  const plus = $('newtab');
+  tabsEl.textContent = '';
   for (const t of state) {
     const el = document.createElement('div');
     el.className = 'tab' + (t.active ? ' active' : '');
     el.title = t.title + '\n' + t.url;
+    const host = hostOf(t.url);
     if (t.loading) { const s = document.createElement('span'); s.className = 'spin'; el.appendChild(s); }
+    else el.appendChild(letterBadge(host, 'fav'));
     const title = document.createElement('span'); title.className = 't'; title.textContent = t.title;
-    const x = document.createElement('span'); x.className = 'x'; x.textContent = '×'; x.title = 'Закрыть (Ctrl+W)';
-    // Закрываем сразу по нажатию: при переключении вкладок панель перерисовывается,
+    const x = document.createElement('span'); x.className = 'x'; x.title = 'Закрыть (Ctrl+W)';
+    x.innerHTML = icon('close');
+    // Закрываем по нажатию: панель перерисовывается при переключении вкладок,
     // и обычный click до крестика не доходил
     x.onmousedown = e => {
       e.stopPropagation(); e.preventDefault();
@@ -25,60 +40,90 @@ function render() {
       else if (e.button === 0 && !t.active) api.send('tab:switch', t.id);
     };
     el.append(title, x);
-    tabsEl.insertBefore(el, plus);
+    if (t.translated) { const d = document.createElement('span'); d.className = 'tr-dot'; d.title = 'Переведено'; el.appendChild(d); }
+    tabsEl.appendChild(el);
   }
   const a = state.find(t => t.active);
-  if (a) {
-    if (document.activeElement !== addr) addr.value = a.url.startsWith('data:') ? '' : a.url;
-    $('back').disabled = !a.canBack;
-    $('fwd').disabled = !a.canFwd;
-    loading = a.loading;
-    const tr = $('tr');
-    tr.classList.toggle('on', !!a.translated);
-    tr.title = a.translated ? 'Показать оригинал (Ctrl+Shift+Y)' : 'Перевести страницу (Ctrl+Shift+Y)';
-    const star = $('star');
-    star.textContent = a.bookmarked ? '★' : '☆';
-    star.classList.toggle('on', !!a.bookmarked);
-    star.title = a.bookmarked ? 'Убрать из закладок (Ctrl+D)' : 'Добавить в закладки (Ctrl+D)';
-    $('reload').textContent = loading ? '✕' : '⟳';
-  }
-}
+  if (!a) return;
+  const isData = a.url.startsWith('data:');
+  if (document.activeElement !== addr) addr.value = isData ? '' : prettyUrl(a.url);
+  $('back').disabled = !a.canBack;
+  $('fwd').disabled = !a.canFwd;
+  loading = a.loading;
+  setIcon($('reload'), loading ? 'stop' : 'reload');
+  $('reload').title = loading ? 'Остановить загрузку' : 'Обновить (Ctrl+R)';
+  $('loadbar').classList.toggle('on', !!loading);
 
+  const tr = $('tr');
+  tr.classList.toggle('on', !!a.translated);
+  tr.title = a.translated ? 'Показать оригинал (Ctrl+Shift+Y)' : 'Перевести страницу (Ctrl+Shift+Y)';
+  const star = $('star');
+  star.classList.toggle('on', !!a.bookmarked);
+  star.title = a.bookmarked ? 'Убрать из закладок (Ctrl+D)' : 'Добавить в закладки (Ctrl+D)';
+
+  const sec = $('sec');
+  if (/^https:/i.test(a.url)) { setIcon(sec, 'lock'); sec.className = ''; sec.title = 'Защищённое соединение (HTTPS)'; }
+  else if (/^http:/i.test(a.url)) { setIcon(sec, 'unlock'); sec.className = 'http'; sec.title = 'Соединение не защищено (HTTP)'; }
+  else { setIcon(sec, 'search'); sec.className = 'info'; sec.title = ''; }
+}
+// Адрес без лишнего: https:// и завершающий слеш скрываем, пока строка не в фокусе
+function prettyUrl(u) {
+  try {
+    const x = new URL(u);
+    if (x.protocol === 'https:') return (x.host + x.pathname + x.search + x.hash).replace(/\/$/, '');
+  } catch {}
+  return u;
+}
 api.on('tabs', s => { state = s; render(); });
+
+addr.addEventListener('focus', () => {
+  omni.classList.add('focus');
+  const a = state.find(t => t.active);
+  if (a && !a.url.startsWith('data:')) addr.value = a.url;
+  setTimeout(() => addr.select(), 0);
+});
+addr.addEventListener('blur', () => { omni.classList.remove('focus'); render(); });
+addr.addEventListener('keydown', e => {
+  if (e.key === 'Enter') { api.send('nav:go', addr.value); addr.blur(); }
+  if (e.key === 'Escape') { addr.blur(); }
+});
+api.on('focus-address', () => { addr.focus(); addr.select(); });
+
+// ---------- Статус прокси ----------
 const ipText = $('iptext');
 api.on('proxy', st => {
   if (st.state === 'ok') {
     ipEl.className = st.tzMismatch ? 'warn' : 'ok';
-    ipText.textContent = 'Прокси подключён · ' + (st.cc ? st.cc + ' · ' : '') + st.ip + ' · ' + st.ms + ' мс';
-    ipEl.title = 'Прокси: ' + st.proxy + '\nВнешний IP: ' + st.ip +
+    ipText.innerHTML = '';
+    const a = document.createElement('span'); a.textContent = (st.cc ? st.cc + ' · ' : '') + st.ip;
+    const b = document.createElement('span'); b.className = 'muted'; b.textContent = ' · ' + st.ms + ' мс';
+    ipText.append(a, b);
+    ipEl.title = 'Прокси подключён\nПрокси: ' + st.proxy + '\nВнешний IP: ' + st.ip +
       (st.country ? ' (' + st.country + ')' : '') + '\nЗадержка: ' + st.ms + ' мс' +
       (st.tzMismatch ? '\n\n⚠ Часовой пояс браузера (' + st.browserTz + ') не совпадает с поясом прокси (' +
         st.proxyTz + '). Его можно поменять в настройках.' : '') + '\n\nНажмите, чтобы проверить ещё раз';
   } else if (st.state === 'fail') {
     ipEl.className = 'bad';
-    ipText.textContent = 'Нет подключения к прокси';
+    ipText.textContent = 'Нет связи с прокси';
     ipEl.title = (st.proxy ? 'Прокси: ' + st.proxy + '\n' : '') + (st.error || '') +
       '\n\nПовторная попытка каждые 10 секунд. Нажмите, чтобы проверить сейчас.';
   } else {
     ipEl.className = 'wait';
-    ipText.textContent = 'Подключение к прокси…';
+    ipText.textContent = 'Подключение…';
     ipEl.title = 'Подключение к прокси…';
   }
 });
-api.on('focus-address', () => { addr.focus(); addr.select(); });
+ipEl.onclick = () => api.send('ip:check');
+
 let toastTimer;
 api.on('toast', msg => {
   const t = $('toast'); t.textContent = msg; t.classList.add('show');
-  clearTimeout(toastTimer); toastTimer = setTimeout(() => t.classList.remove('show'), 3000);
+  clearTimeout(toastTimer); toastTimer = setTimeout(() => t.classList.remove('show'), 3200);
 });
 
 // ---------- Закладки ----------
 const bmEl = $('bm'), bmHint = $('bmhint');
 let bookmarks = [];
-const COLORS = ['#6c8cff', '#e07a5f', '#3fb68b', '#c77dff', '#f2a541', '#4ea8de', '#ef476f'];
-function colorFor(s) { let h = 0; for (const c of s) h = (h * 31 + c.charCodeAt(0)) >>> 0; return COLORS[h % COLORS.length]; }
-function hostOf(u) { try { return new URL(u).hostname.replace(/^www\./, ''); } catch { return u; } }
-
 function renderBookmarks() {
   bmEl.querySelectorAll('.bm').forEach(n => n.remove());
   bmHint.style.display = bookmarks.length ? 'none' : '';
@@ -87,11 +132,8 @@ function renderBookmarks() {
     el.className = 'bm';
     el.title = b.title + '\n' + b.url;
     const host = hostOf(b.url);
-    const ic = document.createElement('span');
-    ic.className = 'ic'; ic.style.background = colorFor(host);
-    ic.textContent = (host[0] || '?').toUpperCase();
     const n = document.createElement('span'); n.className = 'n'; n.textContent = b.title || host;
-    el.append(ic, n);
+    el.append(letterBadge(host, 'ic'), n);
     el.dataset.i = i;
     el.onmouseup = e => {
       if (e.button === 0) api.send('bm:open', { index: i, inNewTab: e.ctrlKey || e.metaKey });
@@ -120,28 +162,46 @@ api.on('bm:rename-start', i => {
   input.onkeydown = e => { if (e.key === 'Enter') finish(true); if (e.key === 'Escape') finish(false); };
   input.onblur = () => finish(true);
 });
+
+// ---------- Кнопки ----------
 $('star').onclick = () => api.send('bm:toggle');
 $('tr').onclick = () => api.send('tr:toggle');
-api.on('update', u => {
-  const b = $('upd');
-  b.textContent = '⬆ Обновить до ' + u.version;
-  b.style.display = '';
-});
-$('upd').onclick = () => api.send('update:install');
-
 $('newtab').onclick = () => api.send('tab:new');
 $('back').onclick = () => api.send('nav:back');
 $('fwd').onclick = () => api.send('nav:fwd');
 $('reload').onclick = () => api.send(loading ? 'nav:stop' : 'nav:reload');
 $('settings').onclick = () => api.send('settings:open');
+api.on('update', u => {
+  const b = $('upd');
+  b.innerHTML = icon('up');
+  b.append(document.createTextNode('Обновить до ' + u.version));
+  b.style.display = '';
+});
+$('upd').onclick = () => api.send('update:install');
+
 // ---------- Загрузки ----------
-const dlBtn = $('dl'), dlList = $('dllist'), dlEmpty = $('dlempty');
-const ring = dlBtn.querySelector('.ring'), ringBg = dlBtn.querySelector('.ring-bg'), badge = dlBtn.querySelector('.badge');
-const RING_LEN = 75.4;
+const dlBtn = $('dl'), dlList = $('dllist'), dlEmpty = $('dlempty'), dlSum = $('dlsum');
+const ring = dlBtn.querySelector('.ring');
+const RING_LEN = 94.25;
+const ORB_R = 20, ORB_LEN = 2 * Math.PI * ORB_R;
 let dls = [];
 let panelOpen = false;
-let doneFlashTimer = null;
+let doneTimer = null;
 
+const TYPE_COLORS = [
+  [/^(exe|msi|dmg|apk|appimage|deb|rpm)$/, '#8b5cf6'],
+  [/^(zip|rar|7z|tar|gz|xz|bz2|iso)$/, '#f59e0b'],
+  [/^(pdf)$/, '#ef4444'],
+  [/^(png|jpe?g|gif|webp|svg|bmp|heic|avif|ico)$/, '#06b6d4'],
+  [/^(mp4|mkv|mov|avi|webm|m4v)$/, '#ec4899'],
+  [/^(mp3|wav|flac|ogg|m4a|aac)$/, '#10b981'],
+  [/^(docx?|xlsx?|pptx?|odt|ods|csv|txt|rtf|md)$/, '#3b82f6'],
+];
+function typeOf(name) {
+  const ext = ((name.match(/\.([a-z0-9]{1,8})$/i) || [])[1] || '').toLowerCase();
+  const c = (TYPE_COLORS.find(([re]) => re.test(ext)) || [null, '#6366f1'])[1];
+  return { ext: ext.slice(0, 4) || 'file', color: c };
+}
 function fmtBytes(n) {
   if (!n || n < 0) return '0 Б';
   const u = ['Б', 'КБ', 'МБ', 'ГБ', 'ТБ'];
@@ -155,40 +215,69 @@ function fmtTime(sec) {
   if (sec < 3600) return Math.floor(sec / 60) + ' мин ' + Math.round(sec % 60) + ' с';
   return Math.floor(sec / 3600) + ' ч ' + Math.round((sec % 3600) / 60) + ' мин';
 }
-function btn(label, ch, id) {
+function actBtn(name, title, ch, id, cls) {
   const b = document.createElement('button');
-  b.textContent = label;
+  b.className = 'ib ' + (cls || '');
+  b.title = title;
+  b.innerHTML = icon(name);
   b.onclick = (e) => { e.stopPropagation(); api.send(ch, id); };
   return b;
 }
+function orb(d, t) {
+  const o = document.createElement('div');
+  o.className = 'orb';
+  o.style.setProperty('--c', t.color);
+  const frac = d.state === 'completed' ? 1 : d.total ? d.received / d.total : 0.25;
+  const stroke = d.state === 'completed' ? 'var(--ok)' : (d.state === 'interrupted' || d.state === 'cancelled') ? 'var(--bad)'
+    : d.paused ? '#fbbf24' : t.color;
+  o.innerHTML = `<svg class="ring" viewBox="0 0 44 44"><circle class="trk" cx="22" cy="22" r="${ORB_R}" fill="none" stroke-width="2.5"/>` +
+    `<circle class="val" cx="22" cy="22" r="${ORB_R}" fill="none" stroke-width="2.5" stroke-linecap="round" stroke="${stroke}" ` +
+    `stroke-dasharray="${ORB_LEN}" stroke-dashoffset="${ORB_LEN * (1 - frac)}"/></svg>`;
+  const core = document.createElement('div');
+  core.className = 'core';
+  core.style.background = `radial-gradient(circle at 30% 25%, ${t.color}, ${t.color}66)`;
+  if (d.state === 'completed') core.innerHTML = icon('check');
+  else if (d.state === 'interrupted' || d.state === 'cancelled') { core.innerHTML = icon('alert'); core.style.background = 'rgba(251,113,133,.25)'; }
+  else core.textContent = t.ext;
+  o.appendChild(core);
+  return o;
+}
 
 function renderDownloads() {
-  // кнопка: общий прогресс активных загрузок
   const active = dls.filter(d => d.state === 'progressing');
   const known = active.filter(d => d.total > 0);
   const total = known.reduce((a, d) => a + d.total, 0);
   const got = known.reduce((a, d) => a + d.received, 0);
+  const speed = active.reduce((a, d) => a + (d.paused ? 0 : d.speed), 0);
+
+  // кнопка в панели
+  dlBtn.classList.toggle('multi', active.length > 1);
+  dlBtn.querySelector('.badge').textContent = active.length;
   if (active.length) {
-    clearTimeout(doneFlashTimer);
+    clearTimeout(doneTimer);
     dlBtn.classList.remove('done');
-    const frac = total ? got / total : 0.15;
-    ring.setAttribute('opacity', '1'); ringBg.setAttribute('opacity', '1');
-    ring.setAttribute('stroke-dashoffset', String(RING_LEN * (1 - frac)));
-    badge.style.display = active.length > 1 ? '' : 'none';
-    badge.textContent = active.length;
+    dlBtn.classList.add('busy');
+    ring.setAttribute('stroke-dashoffset', String(RING_LEN * (1 - (total ? got / total : 0.12))));
     dlBtn.title = 'Загрузки: ' + active.length + (total ? ' · ' + Math.floor(got / total * 100) + '%' : '');
   } else {
-    badge.style.display = 'none';
     dlBtn.title = 'Загрузки';
-    if (ring.getAttribute('opacity') === '1') {
-      // всё скачалось — зелёное кольцо на пару секунд
-      ring.setAttribute('stroke-dashoffset', '0');
+    if (dlBtn.classList.contains('busy')) {
+      dlBtn.classList.remove('busy');
       dlBtn.classList.add('done');
-      clearTimeout(doneFlashTimer);
-      doneFlashTimer = setTimeout(() => {
-        ring.setAttribute('opacity', '0'); ringBg.setAttribute('opacity', '0'); dlBtn.classList.remove('done');
-      }, 2500);
+      ring.setAttribute('stroke-dashoffset', '0');
+      clearTimeout(doneTimer);
+      doneTimer = setTimeout(() => dlBtn.classList.remove('done'), 2600);
     }
+  }
+
+  // сводка
+  if (active.length) {
+    dlSum.textContent = `${active.length} ${active.length === 1 ? 'файл' : 'файла'} · ` +
+      (speed > 0 ? fmtBytes(speed) + '/с' : 'ожидание') +
+      (total && speed > 0 ? ' · осталось ' + fmtTime((total - got) / speed) : '');
+  } else {
+    const done = dls.filter(d => d.state === 'completed').length;
+    dlSum.textContent = dls.length ? `Готово: ${done} из ${dls.length}` : '';
   }
 
   // список
@@ -196,39 +285,43 @@ function renderDownloads() {
   dlEmpty.style.display = dls.length ? 'none' : '';
   for (const d of dls) {
     const failed = d.state === 'interrupted' || d.state === 'cancelled';
+    const t = typeOf(d.name);
     const el = document.createElement('div');
-    el.className = 'di ' + (d.state === 'completed' ? 'completed' : failed ? 'failed' : '') +
-      (d.paused ? ' paused' : '') + (d.state === 'progressing' && !d.total ? ' indet' : '');
-    const ext = (d.name.match(/\.([a-z0-9]{1,4})$/i) || [])[1] || 'файл';
-    const fi = document.createElement('div'); fi.className = 'fi'; fi.textContent = ext;
+    el.className = 'di ' + (failed ? 'failed' : d.state) + (d.paused ? ' paused' : '') +
+      (d.state === 'progressing' && !d.total ? ' indet' : '');
+    const body = document.createElement('div'); body.className = 'body';
     const nm = document.createElement('div'); nm.className = 'nm'; nm.textContent = d.name; nm.title = d.name;
-    el.append(fi, nm);
+    body.appendChild(nm);
+    const meta = document.createElement('div'); meta.className = 'meta';
+    const acts = document.createElement('div'); acts.className = 'acts';
     if (d.state === 'progressing') {
       const bar = document.createElement('div'); bar.className = 'bar';
       const i = document.createElement('i');
-      i.style.width = d.total ? (d.received / d.total * 100).toFixed(1) + '%' : '30%';
-      bar.appendChild(i); el.appendChild(bar);
-    }
-    const meta = document.createElement('div'); meta.className = 'meta';
-    const info = document.createElement('span');
-    if (d.state === 'progressing') {
-      const parts = [fmtBytes(d.received) + (d.total ? ' из ' + fmtBytes(d.total) : '')];
-      if (d.paused) parts.push('пауза');
+      i.style.width = d.total ? Math.max(2, d.received / d.total * 100).toFixed(1) + '%' : '35%';
+      bar.appendChild(i); body.appendChild(bar);
+      const pct = d.total ? Math.floor(d.received / d.total * 100) + '% · ' : '';
+      meta.textContent = pct + fmtBytes(d.received) + (d.total ? ' из ' + fmtBytes(d.total) : '');
+      if (d.paused) meta.textContent += ' · пауза';
       else if (d.speed > 0) {
-        parts.push(fmtBytes(d.speed) + '/с');
-        if (d.total) { const left = fmtTime((d.total - d.received) / d.speed); if (left) parts.push('осталось ' + left); }
+        const sp = document.createElement('span'); sp.className = 'sp';
+        sp.textContent = ' · ' + fmtBytes(d.speed) + '/с';
+        meta.appendChild(sp);
+        if (d.total) { const left = fmtTime((d.total - d.received) / d.speed); if (left) meta.append(' · ' + left); }
       }
-      info.textContent = parts.join(' · ');
-      meta.append(info, btn(d.paused ? 'Продолжить' : 'Пауза', 'dl:pause', d.id), btn('Отмена', 'dl:cancel', d.id));
+      acts.append(
+        actBtn(d.paused ? 'play' : 'pause', d.paused ? 'Продолжить' : 'Пауза', 'dl:pause', d.id),
+        actBtn('close', 'Отменить', 'dl:cancel', d.id, 'danger'),
+      );
     } else if (d.state === 'completed') {
-      info.textContent = 'Готово · ' + fmtBytes(d.received);
-      meta.append(info, btn('Открыть', 'dl:open', d.id), btn('В папке', 'dl:show', d.id));
+      meta.textContent = 'Готово · ' + fmtBytes(d.received);
+      acts.append(actBtn('open', 'Открыть файл', 'dl:open', d.id), actBtn('folder', 'Показать в папке', 'dl:show', d.id));
       el.ondblclick = () => api.send('dl:open', d.id);
+      el.title = 'Двойной клик — открыть';
     } else {
-      info.textContent = d.state === 'cancelled' ? 'Отменено' : 'Ошибка загрузки';
-      meta.append(info);
+      meta.textContent = d.state === 'cancelled' ? 'Отменено' : 'Ошибка загрузки';
     }
-    el.appendChild(meta);
+    body.appendChild(meta);
+    el.append(orb(d, t), body, acts);
     dlList.appendChild(el);
   }
 }
@@ -246,9 +339,3 @@ $('dlfolder').onclick = () => api.send('downloads:open');
 $('dlclear').onclick = () => api.send('dl:clear');
 document.addEventListener('keydown', e => { if (e.key === 'Escape' && panelOpen) api.send('dl:panel', false); });
 renderDownloads();
-ipEl.onclick = () => api.send('ip:check');
-addr.addEventListener('keydown', e => {
-  if (e.key === 'Enter') { api.send('nav:go', addr.value); addr.blur(); }
-  if (e.key === 'Escape') { addr.blur(); render(); }
-});
-addr.addEventListener('focus', () => setTimeout(() => addr.select(), 0));

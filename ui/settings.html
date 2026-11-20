@@ -2,92 +2,147 @@
 <html lang="ru">
 <head>
 <meta charset="utf-8">
-<meta http-equiv="Content-Security-Policy" content="default-src 'self'; style-src 'self' 'unsafe-inline'; script-src 'self'">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; style-src 'self' 'unsafe-inline'; script-src 'self'; img-src 'self' data:">
 <title>Настройки — S Browser</title>
 <style>
+  :root { --text: #e9ecf5; --muted: #8a90a6; --line: rgba(255,255,255,.08);
+    --grad: linear-gradient(90deg, #8b5cf6, #3b82f6 50%, #06d6e0); }
   * { box-sizing: border-box; }
-  body { margin: 0; padding: 22px; overflow-y: auto; background: #1e1f22; color: #ddd; font: 14px system-ui, "Segoe UI", sans-serif; }
-  h2 { margin: 0 0 16px; font-size: 18px; }
-  label { display: block; margin: 12px 0 4px; color: #aaa; font-size: 12px; }
-  input, select { width: 100%; height: 34px; padding: 0 10px; background: #2b2d31; color: #eee;
-    border: 1px solid #4a4d55; border-radius: 6px; font: inherit; outline: none; }
-  input:focus, select:focus { border-color: #6c8cff; }
+  html { background: #07080d; }
+  body { margin: 0; padding: 26px 24px 22px; color: var(--text); overflow-y: auto; min-height: 100vh;
+    font: 13.5px "Segoe UI Variable Text", "Segoe UI", Inter, system-ui, sans-serif;
+    background:
+      radial-gradient(500px 220px at 0% 0%, rgba(139,92,246,.20), transparent 70%),
+      radial-gradient(500px 260px at 100% 0%, rgba(6,214,224,.12), transparent 70%), #07080d; }
+  .brand { display: flex; align-items: center; gap: 12px; margin-bottom: 18px; }
+  .brand img { width: 40px; height: 40px; border-radius: 12px; box-shadow: 0 0 22px rgba(99,102,241,.5); }
+  .brand b { font-size: 18px; display: block; }
+  .brand span { color: var(--muted); font-size: 12px; }
+  .card { position: relative; padding: 16px 16px 14px; margin-bottom: 14px; border-radius: 16px;
+    background: rgba(255,255,255,.035); border: 1px solid var(--line); }
+  .card h2 { margin: 0 0 4px; font-size: 13px; font-weight: 600; letter-spacing: .6px; text-transform: uppercase;
+    background: var(--grad); -webkit-background-clip: text; background-clip: text; color: transparent; }
+  label { display: block; margin: 12px 0 5px; color: var(--muted); font-size: 12px; }
+  input, select { width: 100%; height: 36px; padding: 0 12px; background: rgba(255,255,255,.05); color: var(--text);
+    border: 1px solid var(--line); border-radius: 10px; font: inherit; outline: none; transition: border-color .2s, box-shadow .2s; }
+  select option, select optgroup { background: #141726; }
+  input:focus, select:focus { border-color: #6366f1; box-shadow: 0 0 0 3px rgba(99,102,241,.2); }
   .row { display: flex; gap: 10px; } .row > div { flex: 1; } .row > .port { flex: 0 0 110px; }
-  .check { display: flex; align-items: center; gap: 8px; margin-top: 16px; color: #ccc; }
-  .check input { width: auto; height: auto; }
-  .hint { font-size: 12px; color: #888; margin-top: 6px; }
-  .err { color: #ff8a8a; min-height: 18px; margin-top: 12px; font-size: 13px; }
-  .btns { display: flex; gap: 10px; margin-top: 14px; }
-  button { height: 36px; padding: 0 16px; border: 0; border-radius: 6px; font: inherit; cursor: pointer; }
-  #save { background: #6c8cff; color: #fff; flex: 1; }
-  #clear { background: #3a3d43; color: #ddd; }
+  .check { display: flex; align-items: center; gap: 10px; margin: 12px 0 0; color: #cfd3e3; font-size: 13px; cursor: default; }
+  .check input { appearance: none; width: 34px; height: 20px; flex: none; padding: 0; border-radius: 10px; position: relative;
+    background: rgba(255,255,255,.1); border: 0; transition: background .2s; }
+  .check input::after { content: ""; position: absolute; top: 3px; left: 3px; width: 14px; height: 14px; border-radius: 50%;
+    background: #fff; transition: transform .2s; }
+  .check input:checked { background: var(--grad); box-shadow: 0 0 10px rgba(99,102,241,.45); }
+  .check input:checked::after { transform: translateX(14px); }
+  .hint { font-size: 12px; color: var(--muted); margin-top: 6px; line-height: 1.45; }
+  .hint b { color: #c7d2fe; font-weight: 500; }
+  .err { color: #fb7185; min-height: 18px; margin: 4px 2px 0; font-size: 13px; }
+  .btns { display: flex; gap: 10px; margin-top: 10px; }
+  button { height: 40px; padding: 0 16px; border: 0; border-radius: 12px; font: inherit; cursor: default; color: #fff; }
+  #save { flex: 1; background: var(--grad); font-weight: 600; box-shadow: 0 6px 20px rgba(59,130,246,.35); }
+  #save:hover { filter: brightness(1.1); }
+  #clear { background: rgba(255,255,255,.07); color: #d6d9e6; }
+  #clear:hover { background: rgba(255,255,255,.12); }
+  #ver { text-align: center; margin-top: 16px; }
 </style>
 </head>
 <body>
-  <h2>Прокси</h2>
-  <label for="type">Тип</label>
-  <select id="type">
-    <option value="socks5">SOCKS5</option>
-    <option value="http">HTTP</option>
-    <option value="https">HTTPS</option>
-    <option value="socks4">SOCKS4</option>
-  </select>
-  <div class="row">
-    <div><label for="host">Адрес</label><input id="host" placeholder="1.2.3.4 или proxy.example.com"></div>
-    <div class="port"><label for="port">Порт</label><input id="port" inputmode="numeric" placeholder="1080"></div>
-  </div>
-  <label for="user">Логин (необязательно)</label>
-  <input id="user" autocomplete="off">
-  <label for="pass">Пароль</label>
-  <input id="pass" type="password" autocomplete="off">
-  <div class="hint" id="passhint"></div>
-  <div class="hint">Логин и пароль работают только с HTTP/HTTPS-прокси — это ограничение Chromium.</div>
-  <label class="check"><input type="checkbox" id="incognito"> Режим инкогнито: ничего не сохранять после закрытия</label>
-  <label class="check"><input type="checkbox" id="noCache"> Отключить кэш (сайты не смогут его читать)</label>
-  <label class="check"><input type="checkbox" id="block3p"> Блокировать сторонние cookies (трекеры)</label>
-  <h2 style="margin-top:22px">Часовой пояс</h2>
-  <select id="timezone">
-    <optgroup label="UTC+8">
-      <option value="Asia/Singapore">Сингапур — Asia/Singapore</option>
-      <option value="Asia/Shanghai">Китай — Asia/Shanghai</option>
-      <option value="Asia/Hong_Kong">Гонконг — Asia/Hong_Kong</option>
-      <option value="Asia/Taipei">Тайвань — Asia/Taipei</option>
-      <option value="Asia/Kuala_Lumpur">Малайзия — Asia/Kuala_Lumpur</option>
-      <option value="Asia/Manila">Филиппины — Asia/Manila</option>
-      <option value="Australia/Perth">Австралия (Перт) — Australia/Perth</option>
-    </optgroup>
-    <optgroup label="Другие">
-      <option value="UTC">UTC</option>
-      <option value="Europe/London">Лондон (UTC+0/+1)</option>
-      <option value="Europe/Berlin">Берлин (UTC+1/+2)</option>
-      <option value="Europe/Moscow">Москва (UTC+3)</option>
-      <option value="Asia/Dubai">Дубай (UTC+4)</option>
-      <option value="Asia/Tokyo">Токио (UTC+9)</option>
-      <option value="America/New_York">Нью-Йорк (UTC−5/−4)</option>
-      <option value="America/Los_Angeles">Лос-Анджелес (UTC−8/−7)</option>
-      <option value="system">Системный (без подмены)</option>
-    </optgroup>
-  </select>
-  <div class="hint">Лучше выбрать пояс страны, где находится ваш прокси.</div>
+  <div class="brand"><img src="icon.png" alt=""><div><b>Настройки</b><span id="ver"></span></div></div>
 
-  <h2 style="margin-top:22px">Перевод</h2>
-  <label class="check"><input type="checkbox" id="autoTranslate"> Автоматически переводить сайты на другом языке</label>
-  <label for="translateTo">Переводить на</label>
-  <select id="translateTo">
-    <option value="ru">Русский</option><option value="en">English</option><option value="uk">Українська</option>
-    <option value="zh-CN">中文</option><option value="de">Deutsch</option><option value="fr">Français</option>
-    <option value="es">Español</option><option value="it">Italiano</option><option value="pt">Português</option>
-    <option value="ja">日本語</option><option value="ko">한국어</option><option value="tr">Türkçe</option>
-    <option value="ar">العربية</option>
-  </select>
-  <div class="hint">Кнопка «文A» в панели (Ctrl+Shift+Y) включает и выключает перевод на сайте. Текст страниц отправляется в Google Переводчик через ваш прокси.</div>
+  <div class="card">
+    <h2>Прокси</h2>
+    <label for="type">Тип</label>
+    <select id="type">
+      <option value="socks5">SOCKS5</option>
+      <option value="http">HTTP</option>
+      <option value="https">HTTPS</option>
+      <option value="socks4">SOCKS4</option>
+    </select>
+    <div class="row">
+      <div><label for="host">Адрес</label><input id="host" placeholder="1.2.3.4 или proxy.example.com"></div>
+      <div class="port"><label for="port">Порт</label><input id="port" inputmode="numeric" placeholder="1080"></div>
+    </div>
+    <div class="row">
+      <div><label for="user">Логин (необязательно)</label><input id="user" autocomplete="off"></div>
+      <div><label for="pass">Пароль</label><input id="pass" type="password" autocomplete="off"></div>
+    </div>
+    <div class="hint" id="passhint"></div>
+    <div class="hint">Логин и пароль работают только с HTTP/HTTPS-прокси — это ограничение Chromium.</div>
+  </div>
+
+  <div class="card">
+    <h2>Приватность</h2>
+    <label class="check"><input type="checkbox" id="incognito"> Режим инкогнито: ничего не сохранять после закрытия</label>
+    <label class="check"><input type="checkbox" id="noCache"> Отключить кэш (сайты не смогут его читать)</label>
+    <label class="check"><input type="checkbox" id="block3p"> Блокировать сторонние cookies (трекеры)</label>
+  </div>
+
+  <div class="card">
+    <h2>Регион</h2>
+    <label for="timezone">Часовой пояс</label>
+    <select id="timezone">
+      <optgroup label="UTC+8">
+        <option value="Asia/Singapore">Сингапур — Asia/Singapore</option>
+        <option value="Asia/Shanghai">Китай — Asia/Shanghai</option>
+        <option value="Asia/Hong_Kong">Гонконг — Asia/Hong_Kong</option>
+        <option value="Asia/Taipei">Тайвань — Asia/Taipei</option>
+        <option value="Asia/Kuala_Lumpur">Малайзия — Asia/Kuala_Lumpur</option>
+        <option value="Asia/Manila">Филиппины — Asia/Manila</option>
+        <option value="Australia/Perth">Австралия (Перт) — Australia/Perth</option>
+      </optgroup>
+      <optgroup label="Другие">
+        <option value="UTC">UTC</option>
+        <option value="Europe/London">Лондон (UTC+0/+1)</option>
+        <option value="Europe/Berlin">Берлин (UTC+1/+2)</option>
+        <option value="Europe/Moscow">Москва (UTC+3)</option>
+        <option value="Asia/Dubai">Дубай (UTC+4)</option>
+        <option value="Asia/Tokyo">Токио (UTC+9)</option>
+        <option value="America/New_York">Нью-Йорк (UTC−5/−4)</option>
+        <option value="America/Los_Angeles">Лос-Анджелес (UTC−8/−7)</option>
+        <option value="system">Системный (без подмены)</option>
+      </optgroup>
+    </select>
+    <label for="browserLang">Язык браузера для сайтов</label>
+    <select id="browserLang">
+      <option value="auto">Авто — по часовому поясу</option>
+      <option value="en-US">English (США) — en-US</option>
+      <option value="en-GB">English (Великобритания) — en-GB</option>
+      <option value="en-SG">English (Сингапур) — en-SG</option>
+      <option value="ru-RU">Русский — ru-RU</option>
+      <option value="zh-CN">中文 (简体) — zh-CN</option>
+      <option value="zh-TW">中文 (繁體) — zh-TW</option>
+      <option value="de-DE">Deutsch — de-DE</option>
+      <option value="fr-FR">Français — fr-FR</option>
+      <option value="es-ES">Español — es-ES</option>
+      <option value="ja-JP">日本語 — ja-JP</option>
+      <option value="ko-KR">한국어 — ko-KR</option>
+      <option value="ar-AE">العربية — ar-AE</option>
+      <option value="system">Системный (без подмены)</option>
+    </select>
+    <div class="hint" id="langhint"></div>
+    <div class="hint">Лучше выбрать пояс страны, где находится ваш прокси: сайты сверяют IP, время и язык.</div>
+  </div>
+
+  <div class="card">
+    <h2>Перевод</h2>
+    <label class="check"><input type="checkbox" id="autoTranslate"> Автоматически переводить сайты на другом языке</label>
+    <label for="translateTo">Переводить на</label>
+    <select id="translateTo">
+      <option value="ru">Русский</option><option value="en">English</option><option value="uk">Українська</option>
+      <option value="zh-CN">中文</option><option value="de">Deutsch</option><option value="fr">Français</option>
+      <option value="es">Español</option><option value="it">Italiano</option><option value="pt">Português</option>
+      <option value="ja">日本語</option><option value="ko">한국어</option><option value="tr">Türkçe</option>
+      <option value="ar">العربية</option>
+    </select>
+    <div class="hint">Кнопка «文A» в адресной строке (Ctrl+Shift+Y) включает и выключает перевод. Текст страниц уходит в Google Переводчик через ваш прокси; страницы входа и оплаты автоматически не переводятся.</div>
+  </div>
 
   <div class="err" id="err"></div>
   <div class="btns">
     <button id="clear" title="Удалить cookies, кэш, историю сайтов">Очистить данные</button>
     <button id="save">Сохранить и перезапустить</button>
   </div>
-  <div class="hint" id="ver" style="margin-top:14px;text-align:center"></div>
   <script src="settings.js"></script>
 </body>
 </html>

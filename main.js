@@ -506,12 +506,22 @@ function toast(msg) { if (ui && !ui.webContents.isDestroyed()) ui.webContents.se
 
 function errorPage(code, desc, url) {
   const proxyErr = /PROXY|TUNNEL|SOCKS/i.test(desc);
+  const esc = (x) => String(x).replace(/[<>&"]/g, '');
   const html = `<!doctype html><meta charset="utf-8"><title>Ошибка</title>
-<body style="font:15px system-ui;background:#1e1f22;color:#ddd;display:grid;place-items:center;height:90vh">
-<div style="max-width:560px"><h2>${proxyErr ? 'Прокси недоступен' : 'Страница не загрузилась'}</h2>
-<p>${proxyErr ? 'Соединение заблокировано: прямой выход в интернет отключён.' : ''}</p>
-<p style="opacity:.7">${desc} (${code})</p>
-<p style="opacity:.5;word-break:break-all">${String(url).replace(/[<>&"]/g, '')}</p></div>`;
+<style>
+body{margin:0;height:100vh;display:grid;place-items:center;color:#e9ecf5;font:15px "Segoe UI",system-ui,sans-serif;
+background:radial-gradient(600px 300px at 30% 20%,rgba(139,92,246,.18),transparent 70%),
+radial-gradient(600px 300px at 70% 80%,rgba(6,214,224,.12),transparent 70%),#07080d}
+.c{max-width:560px;padding:32px 36px;border-radius:20px;background:rgba(255,255,255,.04);border:1px solid rgba(255,255,255,.08);
+box-shadow:0 20px 60px rgba(0,0,0,.5)}
+.o{width:56px;height:56px;border-radius:50%;display:grid;place-items:center;font-size:26px;margin-bottom:14px;
+background:${proxyErr ? 'rgba(251,113,133,.15)' : 'rgba(96,165,250,.15)'};box-shadow:0 0 30px ${proxyErr ? 'rgba(251,113,133,.35)' : 'rgba(96,165,250,.35)'}}
+h2{margin:0 0 8px;font-weight:600;background:linear-gradient(90deg,#a78bfa,#60a5fa,#22d3ee);-webkit-background-clip:text;color:transparent}
+p{margin:6px 0;line-height:1.5}.m{color:#8a90a6;font-size:13px}.u{color:#6b7086;font-size:12px;word-break:break-all}
+</style><div class="c"><div class="o">${proxyErr ? '⛔' : '⚠'}</div>
+<h2>${proxyErr ? 'Прокси недоступен' : 'Страница не загрузилась'}</h2>
+<p>${proxyErr ? 'Соединение заблокировано: прямой выход в интернет отключён. Проверьте прокси в настройках.' : 'Попробуйте обновить страницу (Ctrl+R).'}</p>
+<p class="m">${esc(desc)} (${esc(code)})</p><p class="u">${esc(url)}</p></div>`;
   return 'data:text/html;charset=utf-8,' + encodeURIComponent(html);
 }
 
@@ -873,7 +883,7 @@ async function checkProxy() {
 function createMainWindow() {
   win = new BaseWindow({
     width: 1280, height: 820, minWidth: 600, minHeight: 400,
-    title: APP_NAME, backgroundColor: '#1e1f22', autoHideMenuBar: true,
+    title: APP_NAME, backgroundColor: '#07080d', autoHideMenuBar: true,
     icon: path.join(__dirname, 'ui', 'icon.png'),
   });
   ui = new WebContentsView({
@@ -902,7 +912,7 @@ function openSettings() {
   if (settingsWin) return settingsWin.focus();
   settingsWin = new BrowserWindow({
     width: 500, height: 820, resizable: true, title: 'Настройки — S Browser',
-    autoHideMenuBar: true, backgroundColor: '#1e1f22',
+    autoHideMenuBar: true, backgroundColor: '#07080d',
     icon: path.join(__dirname, 'ui', 'icon.png'),
     webPreferences: { preload: path.join(__dirname, 'preload.js'), contextIsolation: true, sandbox: true },
   });
