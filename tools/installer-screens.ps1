@@ -1,50 +1,66 @@
-# Запускает собранный установщик, проходит страницы и сохраняет скриншоты (для проверки оформления)
+# Проходит страницы собранного установщика и деинсталлятора и снимает их окна (для проверки оформления).
+# Окно снимается через PrintWindow (видно даже под другими окнами), «Далее» нажимается командой WM_COMMAND.
 param([string]$Out = "installer-screens")
 $ErrorActionPreference = 'Continue'
-Add-Type -AssemblyName System.Windows.Forms, System.Drawing, Microsoft.VisualBasic
+Add-Type -AssemblyName System.Drawing
 Add-Type @'
 using System; using System.Runtime.InteropServices;
 public static class W {
+  [StructLayout(LayoutKind.Sequential)] public struct RECT { public int L, T, R, B; }
+  [DllImport("user32.dll")] public static extern bool GetWindowRect(IntPtr h, out RECT r);
+  [DllImport("user32.dll")] public static extern bool PrintWindow(IntPtr h, IntPtr hdc, uint flags);
+  [DllImport("user32.dll")] public static extern bool PostMessage(IntPtr h, uint msg, IntPtr w, IntPtr l);
   [DllImport("user32.dll")] public static extern bool SetForegroundWindow(IntPtr h);
-  [DllImport("user32.dll")] public static extern bool ShowWindow(IntPtr h, int c);
-  [DllImport("user32.dll")] public static extern bool BringWindowToTop(IntPtr h);
 }
 '@
-Write-Host "session: $([System.Diagnostics.Process]::GetCurrentProcess().SessionId) interactive: $([Environment]::UserInteractive)"
-try { (New-Object -ComObject Shell.Application).MinimizeAll() } catch { Write-Host "minimize failed: $_" }
 New-Item -ItemType Directory -Force $Out | Out-Null
 
-function Shot([string]$name) {
-  $b = [System.Windows.Forms.Screen]::PrimaryScreen.Bounds
-  $bmp = New-Object System.Drawing.Bitmap $b.Width, $b.Height
-  $g = [System.Drawing.Graphics]::FromImage($bmp)
-  $g.CopyFromScreen($b.Location, [System.Drawing.Point]::Empty, $b.Size)
-  $bmp.Save((Join-Path $Out "$name.png"), [System.Drawing.Imaging.ImageFormat]::Png)
-  $g.Dispose(); $bmp.Dispose()
-  Write-Host "saved $name"
-}
-function Front {
-  Get-Process | Where-Object { $_.MainWindowHandle -ne 0 -and $_.ProcessName -like 'SBrowser-Setup*' } | ForEach-Object {
-    Write-Host "window: $($_.ProcessName) pid=$($_.Id) session=$($_.SessionId) title='$($_.MainWindowTitle)'"
-    [W]::ShowWindow($_.MainWindowHandle, 9) | Out-Null
-    [W]::BringWindowToTop($_.MainWindowHandle) | Out-Null
-    [W]::SetForegroundWindow($_.MainWindowHandle) | Out-Null
+function FindWin([scriptblock]$filter) {
+  for ($i = 0; $i -lt 40; $i++) {
+    $p = Get-Process | Where-Object { $_.MainWindowHandle -ne 0 } | Where-Object $filter | Select-Object -First 1
+    if ($p) { return $p }
+    Start-Sleep -Milliseconds 500
   }
+  return $null
 }
-function Press([int]$pid_, [string]$keys) {
-  Front
-  Start-Sleep -Milliseconds 400
-  [System.Windows.Forms.SendKeys]::SendWait($keys)
+function Cap([IntPtr]$h, [string]$name) {
+  $r = New-Object W+RECT
+  [W]::GetWindowRect($h, [ref]$r) | Out-Null
+  $w = $r.R - $r.L; $hh = $r.B - $r.T
+  if ($w -le 0 -or $hh -le 0) { Write-Host "skip $name (no rect)"; return }
+  $bmp = New-Object System.Drawing.Bitmap $w, $hh
+  $g = [System.Drawing.Graphics]::FromImage($bmp)
+  $hdc = $g.GetHdc()
+  [W]::PrintWindow($h, $hdc, 2) | Out-Null
+  $g.ReleaseHdc($hdc); $g.Dispose()
+  $bmp.Save((Join-Path $Out "$name.png"), [System.Drawing.Imaging.ImageFormat]::Png)
+  $bmp.Dispose()
+  Write-Host "saved $name ($w x $hh)"
 }
+function Next([IntPtr]$h) { [W]::PostMessage($h, 0x0111, [IntPtr]1, [IntPtr]::Zero) | Out-Null }  # WM_COMMAND, IDOK = «Далее»
+function Cancel([IntPtr]$h) { [W]::PostMessage($h, 0x0111, [IntPtr]2, [IntPtr]::Zero) | Out-Null }
 
+# ---------- Установка ----------
 $setup = Get-ChildItem dist\*.exe | Where-Object { $_.Name -like 'SBrowser-Setup-*' } | Select-Object -First 1
 Write-Host "installer: $($setup.FullName)"
 $p = Start-Process -FilePath $setup.FullName -PassThru
-Start-Sleep -Seconds 6
-Get-Process | Where-Object { $_.ProcessName -like 'SBrowser*' } | ForEach-Object { Write-Host "proc: $($_.ProcessName) pid=$($_.Id) session=$($_.SessionId) hwnd=$($_.MainWindowHandle) title='$($_.MainWindowTitle)'" }
-Front; Start-Sleep -Milliseconds 800; Shot '1-welcome'
-Press $p.Id '{ENTER}'; Start-Sleep -Seconds 3; Shot '2-next'
-Press $p.Id '{ENTER}'; Start-Sleep -Seconds 3; Shot '3-next'
-Press $p.Id '{ENTER}'; Start-Sleep -Seconds 20; Shot '4-after-install'
-Press $p.Id '{ENTER}'; Start-Sleep -Seconds 3; Shot '5-end'
-Get-Process | Where-Object { $_.ProcessName -like 'SBrowser-Setup*' -or $_.ProcessName -eq 'S Browser' } | Stop-Process -Force -ErrorAction SilentlyContinue
+$win = FindWin { $_.Id -eq $p.Id }
+if (-not $win) { Write-Host 'installer window not found'; exit 0 }
+$h = $win.MainWindowHandle
+Write-Host "title: $($win.MainWindowTitle)"
+Start-Sleep -Seconds 1; Cap $h '1-welcome'
+Next $h; Start-Sleep -Seconds 2; Cap $h '2-mode'
+Next $h; Start-Sleep -Seconds 2; Cap $h '3-folder'
+Next $h; Start-Sleep -Seconds 2; Cap $h '4-progress'
+Start-Sleep -Seconds 25; Cap $h '5-finish'
+Cancel $h; Start-Sleep -Seconds 2
+Get-Process | Where-Object { $_.ProcessName -like 'SBrowser-Setup*' } | Stop-Process -Force -ErrorAction SilentlyContinue
+
+# ---------- Удаление (только первая страница) ----------
+$un = Join-Path $env:LOCALAPPDATA 'Programs\S Browser\Uninstall S Browser.exe'
+if (Test-Path $un) {
+  Start-Process -FilePath $un | Out-Null
+  $uw = FindWin { $_.MainWindowTitle -like '*S Browser*' -and $_.ProcessName -ne 'S Browser' -and $_.ProcessName -notlike 'SBrowser-Setup*' }
+  if ($uw) { Start-Sleep -Seconds 1; Cap $uw.MainWindowHandle '6-uninstall'; Cancel $uw.MainWindowHandle }
+} else { Write-Host "uninstaller not found: $un" }
+Get-Process | Where-Object { $_.ProcessName -eq 'S Browser' } | Stop-Process -Force -ErrorAction SilentlyContinue
