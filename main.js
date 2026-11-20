@@ -16,7 +16,7 @@
  */
 const {
   app, BaseWindow, BrowserWindow, WebContentsView, Menu,
-  ipcMain, session, safeStorage, shell, net,
+  ipcMain, session, safeStorage, shell, net, clipboard,
 } = require('electron');
 const path = require('path');
 const fs = require('fs');
@@ -184,7 +184,7 @@ async function setupSession() {
 
   // Только веб-схемы. file:// и прочее — блок.
   ses.webRequest.onBeforeRequest((d, cb) => {
-    cb({ cancel: !/^(https?|wss?|data|blob):/i.test(d.url) });
+    cb({ cancel: !/^(https?|wss?|data|blob|devtools):/i.test(d.url) });
   });
 
   // ---------- Защита кэша и от трекинга ----------
@@ -388,6 +388,7 @@ function newTab(url = START_URL) {
     wc.on(ev, sendTabs);
   }
   wc.on('before-input-event', (e, input) => handleShortcut(e, input));
+  attachContextMenu(wc, tab);
 
   view.setVisible(false);
   win.contentView.addChildView(view);
@@ -464,6 +465,80 @@ function openHandler({ url: u, disposition, features }) {
   return { action: 'deny' };
 }
 
+// ---------- Инструменты разработчика и контекстное меню ----------
+// Вкладки — это WebContentsView, в них DevTools нельзя «пристыковать»,
+// поэтому открываем отдельным окном.
+function toggleDevTools(wc) {
+  if (!wc || wc.isDestroyed()) return;
+  if (wc.isDevToolsOpened()) wc.closeDevTools();
+  else wc.openDevTools({ mode: 'detach', activate: true });
+}
+
+function attachContextMenu(wc, tab) {
+  wc.on('context-menu', (_e, p) => {
+    const items = [];
+    const httpLink = /^https?:/i.test(p.linkURL || '');
+    if (httpLink) {
+      items.push(
+        { label: 'Открыть ссылку в новой вкладке', click: () => newTab(p.linkURL) },
+        { label: 'Копировать адрес ссылки', click: () => clipboard.writeText(p.linkURL) },
+        { type: 'separator' },
+      );
+    }
+    if (p.mediaType === 'image' && /^https?:/i.test(p.srcURL || '')) {
+      items.push(
+        { label: 'Открыть изображение в новой вкладке', click: () => newTab(p.srcURL) },
+        { label: 'Копировать адрес изображения', click: () => clipboard.writeText(p.srcURL) },
+        { type: 'separator' },
+      );
+    }
+    if (p.isEditable) {
+      items.push(
+        { label: 'Отменить', role: 'undo', enabled: p.editFlags.canUndo },
+        { label: 'Повторить', role: 'redo', enabled: p.editFlags.canRedo },
+        { type: 'separator' },
+        { label: 'Вырезать', role: 'cut', enabled: p.editFlags.canCut },
+        { label: 'Копировать', role: 'copy', enabled: p.editFlags.canCopy },
+        { label: 'Вставить', role: 'paste', enabled: p.editFlags.canPaste },
+        { label: 'Выделить всё', role: 'selectAll' },
+        { type: 'separator' },
+      );
+    } else if (p.selectionText && p.selectionText.trim()) {
+      const sel = p.selectionText.trim();
+      const short = sel.length > 30 ? sel.slice(0, 30) + '…' : sel;
+      items.push(
+        { label: 'Копировать', role: 'copy' },
+        { label: `Найти «${short}»`, click: () => newTab(SEARCH_URL + encodeURIComponent(sel.slice(0, 500))) },
+        { type: 'separator' },
+      );
+    }
+    const nh = wc.navigationHistory;
+    items.push(
+      { label: 'Назад', enabled: !!(nh && nh.canGoBack()), click: () => nh.goBack() },
+      { label: 'Вперёд', enabled: !!(nh && nh.canGoForward()), click: () => nh.goForward() },
+      { label: 'Обновить', click: () => wc.reload() },
+    );
+    if (tab) {
+      items.push({
+        label: tab.tr && tab.tr.active ? 'Показать оригинал' : 'Перевести страницу',
+        click: () => { activate(tab.id); ipcMain.emit('tr:toggle'); },
+      });
+    }
+    items.push(
+      { type: 'separator' },
+      {
+        label: 'Просмотреть код',
+        click: () => {
+          if (!wc.isDevToolsOpened()) wc.openDevTools({ mode: 'detach', activate: true });
+          wc.inspectElement(p.x, p.y);
+        },
+      },
+    );
+    const owner = tab ? win : BrowserWindow.fromWebContents(wc);
+    Menu.buildFromTemplate(items).popup(owner ? { window: owner } : {});
+  });
+}
+
 function setupPopup(popup) {
   const pwc = popup.webContents;
   popup.setMenu(null);
@@ -482,8 +557,11 @@ function setupPopup(popup) {
   pwc.on('page-title-updated', (e) => { e.preventDefault(); updateTitle(); });
   pwc.on('did-navigate', updateTitle);
   pwc.on('before-input-event', (e, input) => {
-    if (input.type === 'keyDown' && input.key === 'F12') { pwc.toggleDevTools(); e.preventDefault(); }
+    if (input.type !== 'keyDown') return;
+    const k = input.key.toLowerCase();
+    if (k === 'f12' || (input.control && input.shift && (k === 'i' || k === 'j'))) { toggleDevTools(pwc); e.preventDefault(); }
   });
+  attachContextMenu(pwc, null);
 }
 
 function activate(id) {
@@ -527,7 +605,9 @@ function handleShortcut(e, input) {
   else if (input.alt && k === 'arrowright') { t?.view.webContents.navigationHistory?.goForward(); e.preventDefault(); }
   else if (mod && k === 'd') { ipcMain.emit('bm:toggle'); e.preventDefault(); }
   else if (mod && input.shift && k === 'y') { ipcMain.emit('tr:toggle'); e.preventDefault(); }
-  else if (k === 'f12') { t?.view.webContents.toggleDevTools(); e.preventDefault(); }
+  else if (k === 'f12' || (mod && input.shift && (k === 'i' || k === 'j'))) {
+    toggleDevTools(t && liveWc(t)); e.preventDefault();
+  }
 }
 
 // ---------- Состояние подключения к прокси ----------
