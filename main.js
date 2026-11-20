@@ -94,6 +94,18 @@ if (NO_CACHE) app.commandLine.appendSwitch('disk-cache-size', '1');
 
 if (!app.requestSingleInstanceLock()) { app.quit(); }
 
+// Непредвиденные ошибки не роняют браузер, а пишутся в журнал
+const LOG_PATH = path.join(DATA_DIR, 'error.log');
+function logError(kind, err) {
+  try {
+    const line = `[${new Date().toISOString()}] ${kind}: ${(err && err.stack) || err}\n`;
+    fs.appendFileSync(LOG_PATH, line);
+    if (fs.statSync(LOG_PATH).size > 1_000_000) fs.writeFileSync(LOG_PATH, line);
+  } catch {}
+}
+process.on('uncaughtException', (e) => logError('uncaughtException', e));
+process.on('unhandledRejection', (e) => logError('unhandledRejection', e));
+
 // ---------- Пароль прокси (шифруется средствами ОС, если доступно) ----------
 function encryptPass(p) {
   if (!p) return null;
@@ -254,10 +266,33 @@ function layout() {
   for (const t of tabs) t.view.setBounds({ x: 0, y: TOOLBAR_H, width: w, height: Math.max(0, h - TOOLBAR_H) });
 }
 
-function activeTab() { return tabs.find(t => t.id === activeId); }
+// Вкладка считается живой, только пока её webContents не уничтожен
+// (страница могла закрыть себя через window.close(), процесс мог упасть и т.п.)
+function liveWc(t) {
+  const wc = t && t.view && t.view.webContents;
+  return wc && !wc.isDestroyed() ? wc : null;
+}
+function activeTab() {
+  const t = tabs.find(x => x.id === activeId);
+  return liveWc(t) ? t : undefined;
+}
+let quitting = false;
+app.on('before-quit', () => { quitting = true; });
+
+// Убрать вкладку, которую закрыла сама страница
+function dropDeadTab(tab) {
+  const i = tabs.indexOf(tab);
+  if (i < 0) return;
+  tabs.splice(i, 1);
+  if (quitting || !win || win.isDestroyed()) return;
+  try { win.contentView.removeChildView(tab.view); } catch {}
+  if (!tabs.length) return newTab();
+  if (activeId === tab.id) activate(tabs[Math.min(i, tabs.length - 1)].id);
+  else sendTabs();
+}
 
 function tabState() {
-  return tabs.map(t => {
+  return tabs.filter(t => liveWc(t)).map(t => {
     const wc = t.view.webContents;
     const nh = wc.navigationHistory;
     return {
@@ -315,6 +350,13 @@ function newTab(url = START_URL) {
   const wc = view.webContents;
   wc.setWebRTCIPHandlingPolicy('disable_non_proxied_udp');
   setupTimezone(wc);
+  wc.once('destroyed', () => dropDeadTab(tab));
+  wc.on('render-process-gone', (_e, d) => {
+    if (d.reason === 'clean-exit') return;
+    const u = wc.getURL();
+    tab.errorUrl = u;
+    wc.loadURL(errorPage(d.reason, 'Вкладка аварийно завершилась. Нажмите «Обновить» (Ctrl+R).', u)).catch(() => {});
+  });
 
   wc.setWindowOpenHandler(({ url: u }) => {
     if (/^https?:/i.test(u)) newTab(u);
@@ -399,8 +441,9 @@ function closeTab(id) {
   const i = tabs.findIndex(t => t.id === id);
   if (i < 0) return;
   const [t] = tabs.splice(i, 1);
-  win.contentView.removeChildView(t.view);
-  t.view.webContents.close();
+  try { win.contentView.removeChildView(t.view); } catch {}
+  const wc = liveWc(t);
+  if (wc) wc.close();
   if (!tabs.length) return newTab();
   if (activeId === id) activate(tabs[Math.min(i, tabs.length - 1)].id);
   else sendTabs();
@@ -503,6 +546,7 @@ function createMainWindow() {
     checkProxy();
   });
   win.on('resize', layout);
+  win.on('close', () => { quitting = true; });
   win.on('closed', () => app.quit());
   layout();
 }
