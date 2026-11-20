@@ -17,32 +17,50 @@ function letterBadge(host, cls) {
 }
 
 // ---------- Вкладки и адресная строка ----------
+// Вкладки обновляются на месте (по id), а не пересоздаются: без лишней перерисовки и анимации
+const tabEls = new Map();
+function makeTab(id) {
+  const el = document.createElement('div');
+  el.className = 'tab';
+  const lead = document.createElement('span'); lead.className = 'lead';
+  const title = document.createElement('span'); title.className = 't';
+  const x = document.createElement('span'); x.className = 'x'; x.title = 'Закрыть (Ctrl+W)';
+  x.innerHTML = icon('close');
+  // Закрываем по нажатию: при переключении вкладок панель обновляется,
+  // и обычный click до крестика не доходил
+  x.onmousedown = e => {
+    e.stopPropagation(); e.preventDefault();
+    if (e.button === 0 || e.button === 1) api.send('tab:close', id);
+  };
+  el.onmousedown = e => {
+    if (e.button === 1) { e.preventDefault(); api.send('tab:close', id); }
+    else if (e.button === 0 && !el.classList.contains('active')) api.send('tab:switch', id);
+  };
+  const dot = document.createElement('span'); dot.className = 'tr-dot'; dot.title = 'Переведено';
+  el.append(lead, title, x, dot);
+  return el;
+}
 function render() {
-  tabsEl.textContent = '';
-  for (const t of state) {
-    const el = document.createElement('div');
-    el.className = 'tab' + (t.active ? ' active' : '');
-    el.title = t.title + '\n' + t.url;
+  const ids = new Set(state.map(t => t.id));
+  for (const [id, el] of tabEls) if (!ids.has(id)) { el.remove(); tabEls.delete(id); }
+  state.forEach((t, i) => {
+    let el = tabEls.get(t.id);
+    if (!el) { el = makeTab(t.id); tabEls.set(t.id, el); }
+    if (tabsEl.children[i] !== el) tabsEl.insertBefore(el, tabsEl.children[i] || null);
+    el.classList.toggle('active', !!t.active);
+    const tip = t.title + '\n' + t.url;
+    if (el.title !== tip) el.title = tip;
+    const tt = el.querySelector('.t');
+    if (tt.textContent !== t.title) tt.textContent = t.title;
     const host = hostOf(t.url);
-    if (t.loading) { const s = document.createElement('span'); s.className = 'spin'; el.appendChild(s); }
-    else el.appendChild(letterBadge(host, 'fav'));
-    const title = document.createElement('span'); title.className = 't'; title.textContent = t.title;
-    const x = document.createElement('span'); x.className = 'x'; x.title = 'Закрыть (Ctrl+W)';
-    x.innerHTML = icon('close');
-    // Закрываем по нажатию: панель перерисовывается при переключении вкладок,
-    // и обычный click до крестика не доходил
-    x.onmousedown = e => {
-      e.stopPropagation(); e.preventDefault();
-      if (e.button === 0 || e.button === 1) api.send('tab:close', t.id);
-    };
-    el.onmousedown = e => {
-      if (e.button === 1) { e.preventDefault(); api.send('tab:close', t.id); }
-      else if (e.button === 0 && !t.active) api.send('tab:switch', t.id);
-    };
-    el.append(title, x);
-    if (t.translated) { const d = document.createElement('span'); d.className = 'tr-dot'; d.title = 'Переведено'; el.appendChild(d); }
-    tabsEl.appendChild(el);
-  }
+    const leadKey = t.loading ? 'spin' : 'fav:' + host;
+    const lead = el.querySelector('.lead');
+    if (lead.dataset.k !== leadKey) {
+      lead.dataset.k = leadKey;
+      lead.replaceChildren(t.loading ? Object.assign(document.createElement('span'), { className: 'spin' }) : letterBadge(host, 'fav'));
+    }
+    el.querySelector('.tr-dot').style.display = t.translated ? '' : 'none';
+  });
   const a = state.find(t => t.active);
   if (!a) return;
   const isData = a.url.startsWith('data:');
@@ -280,7 +298,8 @@ function renderDownloads() {
     dlSum.textContent = dls.length ? `Готово: ${done} из ${dls.length}` : '';
   }
 
-  // список
+  // список рисуем, только когда панель открыта
+  if (!panelOpen) return;
   dlList.textContent = '';
   dlEmpty.style.display = dls.length ? 'none' : '';
   for (const d of dls) {
@@ -328,7 +347,9 @@ function renderDownloads() {
 api.on('downloads', list => { dls = list; renderDownloads(); });
 
 function setPanel(open) {
+  const wasOpen = panelOpen;
   panelOpen = open;
+  if (open && !wasOpen) renderDownloads();
   document.body.classList.toggle('dl-open', open);
   dlBtn.classList.toggle('active', open);
 }

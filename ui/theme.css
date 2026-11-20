@@ -78,6 +78,7 @@ svg.i { width: 18px; height: 18px; flex: none; display: block; }
   background: linear-gradient(#141726, #141726) padding-box, var(--grad) border-box;
   box-shadow: 0 0 18px rgba(99, 102, 241, .28), inset 0 0 12px rgba(139, 92, 246, .08);
 }
+.tab .lead { display: grid; place-items: center; flex: none; }
 .tab .fav { width: 16px; height: 16px; flex: none; border-radius: 5px; color: #fff; font-size: 9.5px; font-weight: 700;
   display: grid; place-items: center; }
 .tab .t { flex: 1; min-width: 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; font-size: 12.5px;
@@ -133,7 +134,7 @@ svg.i { width: 18px; height: 18px; flex: none; display: block; }
 #ip .dot::after { content: ""; position: absolute; inset: -4px; border-radius: 50%; border: 1px solid currentColor; opacity: 0; }
 #ip.ok { color: var(--ok); border-color: rgba(52, 211, 153, .3); background: rgba(52, 211, 153, .07); }
 #ip.ok .dot { box-shadow: 0 0 8px var(--ok); }
-#ip.ok .dot::after { animation: ping 2.4s ease-out infinite; }
+#ip.ok .dot::after { animation: ping 2.4s ease-out 3; } /* несколько раз после подключения, не бесконечно */
 #ip.warn { color: var(--warn); border-color: rgba(251, 191, 36, .3); background: rgba(251, 191, 36, .07); }
 #ip.bad { color: var(--bad); border-color: rgba(251, 113, 133, .35); background: rgba(251, 113, 133, .08); }
 #ip.wait { color: #c4c8d8; }

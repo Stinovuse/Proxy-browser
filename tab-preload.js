@@ -20,6 +20,9 @@ const orig = new Map();      // текстовый узел -> исходный 
 const done = new WeakMap();  // текстовый узел -> текст, который мы вставили
 let observer = null;
 let timer = null;
+let pendingRoots = new Set();   // что изменилось на странице с прошлого прохода
+let fullPass = true;
+const skipCache = new WeakMap(); // элемент -> «внутри code/script/notranslate»
 let busy = false;
 let pending = false;
 
@@ -27,28 +30,47 @@ function report() {
   ipcRenderer.send('tr:state', { active, lang: srcLang });
 }
 
+// Можно ли переводить содержимое элемента (результат кэшируется на элемент)
+function skipped(el) {
+  if (!el) return true;
+  const c = skipCache.get(el);
+  if (c !== undefined) return c;
+  const r = SKIP.has(el.tagName) || el.isContentEditable ||
+    el.getAttribute('translate') === 'no' || el.classList.contains('notranslate') ||
+    (el.parentElement ? skipped(el.parentElement) : false);
+  skipCache.set(el, r);
+  return r;
+}
+
 function eligible(node) {
   const v = node.nodeValue;
   if (!v || v.trim().length < 2 || !/\p{L}/u.test(v)) return false;
   if (done.get(node) === v) return false;
-  for (let e = node.parentElement; e; e = e.parentElement) {
-    if (SKIP.has(e.tagName)) return false;
-    if (e.isContentEditable) return false;
-    if (e.getAttribute('translate') === 'no' || e.classList.contains('notranslate')) return false;
-  }
-  return true;
+  return !skipped(node.parentElement);
 }
 
 function collect() {
   const out = [];
   if (!document.body) return out;
-  const w = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT);
-  let n;
-  while ((n = w.nextNode()) && out.length < MAX_NODES_PER_PASS) {
-    if (!eligible(n)) continue;
+  const roots = fullPass ? [document.body] : [...pendingRoots];
+  fullPass = false;
+  pendingRoots = new Set();
+  const seen = new Set();
+  const take = (n) => {
+    if (seen.has(n) || !eligible(n)) return;
+    seen.add(n);
     // Сайт сам поменял текст узла — запоминаем новый оригинал
     if (orig.has(n) && done.get(n) !== n.nodeValue) orig.set(n, n.nodeValue);
     out.push(n);
+  };
+  for (const r of roots) {
+    if (out.length >= MAX_NODES_PER_PASS) { fullPass = true; break; } // не успели — в следующий раз пройдём всё
+    if (!r.isConnected) continue;
+    if (r.nodeType === Node.TEXT_NODE) { take(r); continue; }
+    if (r.nodeType !== Node.ELEMENT_NODE || skipped(r)) continue;
+    const w = document.createTreeWalker(r, NodeFilter.SHOW_TEXT);
+    let n;
+    while ((n = w.nextNode()) && out.length < MAX_NODES_PER_PASS) take(n);
   }
   return out;
 }
@@ -117,7 +139,15 @@ function start(isAuto) {
   auto = isAuto;
   if (!isAuto) srcLang = null;
   report();
-  observer = new MutationObserver(() => { if (active) schedule(); });
+  fullPass = true;
+  observer = new MutationObserver((records) => {
+    if (!active) return;
+    for (const m of records) {
+      if (m.type === 'characterData') pendingRoots.add(m.target);
+      else for (const n of m.addedNodes) pendingRoots.add(n);
+    }
+    if (pendingRoots.size) schedule();
+  });
   if (document.body) observer.observe(document.body, { childList: true, subtree: true, characterData: true });
   pass();
 }

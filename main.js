@@ -119,10 +119,11 @@ app.commandLine.appendSwitch('disable-quic');
 app.commandLine.appendSwitch('dns-prefetch-disable');
 app.commandLine.appendSwitch('disable-background-networking');
 app.commandLine.appendSwitch('disable-features', 'NetworkPrediction,AutofillServerCommunication,MediaRouter');
+// Загрузка файла несколькими соединениями: через удалённый прокси заметно быстрее
+app.commandLine.appendSwitch('enable-features', 'ParallelDownloading');
 // Кэш на диске не нужен: всё, что сайт мог бы туда положить, не сохраняется
 const NO_CACHE = !cfg || cfg.noCache !== false;
 const BLOCK_3P = !cfg || cfg.block3p !== false;
-if (NO_CACHE) app.commandLine.appendSwitch('disk-cache-size', '1');
 
 if (!app.requestSingleInstanceLock()) { app.quit(); }
 
@@ -226,40 +227,36 @@ async function setupSession() {
   ses.setPermissionCheckHandler((_wc, perm) => allowed.has(perm));
   ses.setDevicePermissionHandler(() => false);
 
-  // Только веб-схемы. file:// и прочее — блок.
-  ses.webRequest.onBeforeRequest((d, cb) => {
-    cb({ cancel: !/^(https?|wss?|data|blob|devtools):/i.test(d.url) });
-  });
+  // file:// для сайтов закрыт. Раньше это проверялось JS-обработчиком на КАЖДЫЙ запрос;
+  // перехват схемы работает внутри сети Chromium и ничего не замедляет.
+  ses.protocol.handle('file', () => new Response('Blocked', { status: 403 }));
 
-  // ---------- Защита кэша и от трекинга ----------
-  if (NO_CACHE) {
-    // Стираем всё, что могло остаться с прошлого запуска
-    await ses.clearCache();
-    await ses.clearStorageData({ storages: ['cachestorage', 'serviceworkers', 'shadercache'] });
+  // ---------- Кэш ----------
+  // Кэш работает в течение сеанса (страницы грузятся быстро), но стирается при каждом
+  // запуске: «суперкуки» через кэш/ETag не переживают перезапуск. Между сайтами
+  // Chromium и так разделяет кэш, поэтому один сайт не видит, что вы были на другом.
+  if (NO_CACHE) await ses.clearCache();
+
+  // ---------- Сторонние cookies ----------
+  // Обработчики заголовков вызываются на каждый запрос, поэтому ставим их,
+  // только если блокировка включена, и выходим как можно раньше.
+  if (BLOCK_3P) {
+    ses.webRequest.onBeforeSendHeaders((d, cb) => {
+      if (d.resourceType === 'mainFrame') return cb({});
+      const h = d.requestHeaders;
+      const k = h.Cookie !== undefined ? 'Cookie' : h.cookie !== undefined ? 'cookie' : null;
+      if (k && isThirdParty(d)) { delete h[k]; return cb({ requestHeaders: h }); }
+      cb({});
+    });
+    ses.webRequest.onHeadersReceived((d, cb) => {
+      if (d.resourceType === 'mainFrame') return cb({});
+      const h = d.responseHeaders;
+      if (!h) return cb({});
+      const k = Object.keys(h).find(x => x.toLowerCase() === 'set-cookie');
+      if (k && isThirdParty(d)) { delete h[k]; return cb({ responseHeaders: h }); }
+      cb({});
+    });
   }
-
-  ses.webRequest.onBeforeSendHeaders((d, cb) => {
-    const h = d.requestHeaders;
-    for (const k of Object.keys(h)) {
-      const lk = k.toLowerCase();
-      // ETag / Last-Modified — классические «суперкуки» через кэш
-      if (NO_CACHE && (lk === 'if-none-match' || lk === 'if-modified-since')) delete h[k];
-      // Куки не уходят на сторонние домены (рекламные сети, счётчики)
-      if (BLOCK_3P && lk === 'cookie' && isThirdParty(d)) delete h[k];
-    }
-    cb({ requestHeaders: h });
-  });
-
-  ses.webRequest.onHeadersReceived((d, cb) => {
-    const h = d.responseHeaders || {};
-    for (const k of Object.keys(h)) {
-      const lk = k.toLowerCase();
-      if (NO_CACHE && ['cache-control', 'expires', 'etag', 'last-modified', 'pragma'].includes(lk)) delete h[k];
-      if (BLOCK_3P && lk === 'set-cookie' && isThirdParty(d)) delete h[k];
-    }
-    if (NO_CACHE) h['Cache-Control'] = ['no-store'];
-    cb({ responseHeaders: h });
-  });
 
   ses.on('will-download', (_e, item) => trackDownload(item));
 }
@@ -503,7 +500,15 @@ function saveBookmarks() {
 }
 function sendBookmarks() { if (ui && !ui.webContents.isDestroyed()) ui.webContents.send('bookmarks', bookmarks); }
 
-function sendTabs() { if (ui && !ui.webContents.isDestroyed()) ui.webContents.send('tabs', tabState()); }
+// Пачка событий страницы (начало загрузки, заголовок, переход…) — одно обновление панели
+let tabsTimer = null;
+function sendTabs() {
+  if (tabsTimer) return;
+  tabsTimer = setTimeout(() => {
+    tabsTimer = null;
+    if (ui && !ui.webContents.isDestroyed()) ui.webContents.send('tabs', tabState());
+  }, 16);
+}
 function toast(msg) { if (ui && !ui.webContents.isDestroyed()) ui.webContents.send('toast', msg); }
 
 function errorPage(code, desc, url) {
