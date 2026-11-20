@@ -48,6 +48,13 @@
     ${StdUtils.ExecShellAsUser} $0 "$launchLink" "open" "$1"
   FunctionEnd
 
+
+  !define MUI_FINISHPAGE_RUN
+  !define MUI_FINISHPAGE_RUN_FUNCTION "SBStartApp"
+  !define MUI_PAGE_CUSTOMFUNCTION_SHOW SBFinishShow
+  !insertmacro MUI_PAGE_FINISH
+
+  ; функция после страницы: переменная $mui.FinishPage.Run объявляется вместе с ней
   Function SBFinishShow
     ; у «темизированной» галочки Windows игнорирует цвет текста — снимаем тему с этого элемента
     Push $0
@@ -56,9 +63,4 @@
     Pop $0
     SetCtlColors $mui.FinishPage.Run "E9ECF5" "0B0D14"
   FunctionEnd
-
-  !define MUI_FINISHPAGE_RUN
-  !define MUI_FINISHPAGE_RUN_FUNCTION "SBStartApp"
-  !define MUI_PAGE_CUSTOMFUNCTION_SHOW SBFinishShow
-  !insertmacro MUI_PAGE_FINISH
 !macroend
