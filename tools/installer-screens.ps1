@@ -17,8 +17,8 @@ New-Item -ItemType Directory -Force $Out | Out-Null
 
 function FindWin([scriptblock]$filter) {
   for ($i = 0; $i -lt 40; $i++) {
-    $p = Get-Process | Where-Object { $_.MainWindowHandle -ne 0 } | Where-Object $filter | Select-Object -First 1
-    if ($p) { return $p }
+    $found = Get-Process | Where-Object { $_.MainWindowHandle -ne 0 } | Where-Object $filter | Select-Object -First 1
+    if ($found) { return $found }
     Start-Sleep -Milliseconds 500
   }
   return $null
@@ -43,8 +43,9 @@ function Cancel([IntPtr]$h) { [W]::PostMessage($h, 0x0111, [IntPtr]2, [IntPtr]::
 # ---------- Установка ----------
 $setup = Get-ChildItem dist\*.exe | Where-Object { $_.Name -like 'SBrowser-Setup-*' } | Select-Object -First 1
 Write-Host "installer: $($setup.FullName)"
-$p = Start-Process -FilePath $setup.FullName -PassThru
-$win = FindWin { $_.Id -eq $p.Id }
+$proc = Start-Process -FilePath $setup.FullName -PassThru
+$setupId = $proc.Id
+$win = FindWin { $_.Id -eq $setupId -or $_.ProcessName -like 'SBrowser-Setup*' }
 if (-not $win) { Write-Host 'installer window not found'; exit 0 }
 $h = $win.MainWindowHandle
 Write-Host "title: $($win.MainWindowTitle)"
