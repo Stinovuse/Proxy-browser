@@ -50,7 +50,10 @@
 
   Function SBFinishShow
     ; у «темизированной» галочки Windows игнорирует цвет текста — снимаем тему с этого элемента
-    System::Call 'uxtheme::SetWindowTheme(p $mui.FinishPage.Run, w " ", w " ")'
+    Push $0
+    StrCpy $0 $mui.FinishPage.Run
+    System::Call 'uxtheme::SetWindowTheme(p r0, w " ", w " ")'
+    Pop $0
     SetCtlColors $mui.FinishPage.Run "E9ECF5" "0B0D14"
   FunctionEnd
 
