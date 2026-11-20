@@ -13,7 +13,6 @@ exports.default = async function afterPack(context) {
     [FuseV1Options.EnableNodeCliInspectArguments]: false,   // нельзя подключить отладчик через --inspect
     [FuseV1Options.OnlyLoadAppFromAsar]: true,              // код только из app.asar
     [FuseV1Options.EnableCookieEncryption]: true,           // cookies на диске зашифрованы
-    [FuseV1Options.GrantFileProtocolExtraPrivileges]: false,
   });
   console.log('  • fuses applied to', exe);
 };

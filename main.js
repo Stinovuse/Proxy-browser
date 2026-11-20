@@ -79,11 +79,13 @@ function localeForTz(tz) {
 const LANG_MODE = cfg && (cfg.browserLang === 'system' || LOCALE_RE.test(cfg.browserLang || '')) ? cfg.browserLang : 'auto';
 const LOCALE = LANG_MODE === 'system' ? null
   : LANG_MODE === 'auto' ? (TIMEZONE === 'system' ? null : localeForTz(TIMEZONE)) : LANG_MODE;
+// Список без q-коэффициентов (как в настройках Chrome): navigator.languages = ['en-SG', 'en'],
+// а заголовок Accept-Language с q=0.9 Chromium сформирует сам
 function acceptLanguageFor(loc) {
   const base = loc.split('-')[0];
   const list = [loc];
-  if (base !== loc) list.push(`${base};q=0.9`);
-  if (base !== 'en') list.push('en;q=0.8');
+  if (base !== loc) list.push(base);
+  if (base !== 'en') list.push('en');
   return list.join(',');
 }
 const ACCEPT_LANG = LOCALE ? acceptLanguageFor(LOCALE) : null;
@@ -1135,17 +1137,27 @@ app.whenReady().then(async () => {
           language: navigator.language, languages: navigator.languages,
           tz: Intl.DateTimeFormat().resolvedOptions().timeZone,
           intlLocale: Intl.DateTimeFormat().resolvedOptions().locale,
+          secure: window.isSecureContext,
           brands: navigator.userAgentData ? navigator.userAgentData.brands.map(b => b.brand) : null,
           ua: navigator.userAgent })`);
       } catch (e) { smokeErrors.push('page probe: ' + e); }
-      try { uiOk = await ui.webContents.executeJavaScript('!!document.getElementById("addr") && !!document.getElementById("dlpanel")'); } catch {}
+      let uiProbe = null;
+      try {
+        uiProbe = await ui.webContents.executeJavaScript(`({
+          url: location.href, title: document.title,
+          addr: !!document.getElementById('addr'), panel: !!document.getElementById('dlpanel'),
+          icons: typeof icon === 'function' && !!document.querySelector('#back svg'),
+          css: getComputedStyle(document.getElementById('top')).height })`);
+        uiOk = !!(uiProbe.addr && uiProbe.panel && uiProbe.icons && uiProbe.css === '112px');
+      } catch (e) { smokeErrors.push('ui probe: ' + e); }
       const expectLang = LOCALE || null;
       const pageOk = !!page && (!expectLang || page.language === expectLang)
         && (TIMEZONE === 'system' || page.tz === TIMEZONE)
-        && !!(page.brands && page.brands.includes('Google Chrome'))
+        && Array.isArray(page.languages) && !page.languages.some(l => l.includes(';'))
+        && (!page.secure || !!(page.brands && page.brands.includes('Google Chrome')))
         && !/Electron|SBrowser/i.test(page.ua);
       const res = {
-        page, uiOk, pageOk, expectLang,
+        page, uiOk, uiProbe, pageOk, expectLang,
         ok: smokeErrors.length === 0 && !!win && tabs.length > 0 && uiOk && pageOk
           && !/Electron|SBrowser|S Browser|s-browser/i.test(ses.getUserAgent()),
         tabs: tabs.length,
