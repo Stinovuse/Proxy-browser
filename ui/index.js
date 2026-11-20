@@ -14,8 +14,16 @@ function render() {
     if (t.loading) { const s = document.createElement('span'); s.className = 'spin'; el.appendChild(s); }
     const title = document.createElement('span'); title.className = 't'; title.textContent = t.title;
     const x = document.createElement('span'); x.className = 'x'; x.textContent = '×'; x.title = 'Закрыть (Ctrl+W)';
-    x.onclick = e => { e.stopPropagation(); api.send('tab:close', t.id); };
-    el.onmousedown = e => { if (e.button === 1) api.send('tab:close', t.id); else api.send('tab:switch', t.id); };
+    // Закрываем сразу по нажатию: при переключении вкладок панель перерисовывается,
+    // и обычный click до крестика не доходил
+    x.onmousedown = e => {
+      e.stopPropagation(); e.preventDefault();
+      if (e.button === 0 || e.button === 1) api.send('tab:close', t.id);
+    };
+    el.onmousedown = e => {
+      if (e.button === 1) { e.preventDefault(); api.send('tab:close', t.id); }
+      else if (e.button === 0 && !t.active) api.send('tab:switch', t.id);
+    };
     el.append(title, x);
     tabsEl.insertBefore(el, plus);
   }
