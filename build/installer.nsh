@@ -1,12 +1,20 @@
 ﻿; S Browser — оформление установщика (NSIS Modern UI)
 ; Файл в UTF-8 с BOM: иначе NSIS прочитает кириллицу в кодировке Windows-1252.
 
+; Переопределить значение, даже если сборщик уже задал своё
+!macro SB_SET NAME VALUE
+  !ifdef ${NAME}
+    !undef ${NAME}
+  !endif
+  !define ${NAME} "${VALUE}"
+!macroend
+
 !macro customHeader
   ; Тёмный фон и светлый текст на страницах приветствия/завершения и в шапке
-  !define MUI_BGCOLOR "0B0D14"
-  !define MUI_TEXTCOLOR "E9ECF5"
-  !define MUI_INSTFILESPAGE_PROGRESSBAR "smooth"
-  !define MUI_INSTFILESPAGE_COLORS "E9ECF5 0B0D14"
+  !insertmacro SB_SET MUI_BGCOLOR "0B0D14"
+  !insertmacro SB_SET MUI_TEXTCOLOR "E9ECF5"
+  !insertmacro SB_SET MUI_INSTFILESPAGE_PROGRESSBAR "smooth"
+  !insertmacro SB_SET MUI_INSTFILESPAGE_COLORS "E9ECF5 0B0D14"
   !ifndef BUILD_UNINSTALLER
     !define MUI_FINISHPAGE_TITLE "S Browser установлен"
     !define MUI_FINISHPAGE_TEXT "Всё готово!$\r$\n$\r$\nПри первом запуске откроются настройки — укажите адрес, порт и, если нужно, логин и пароль вашего прокси.$\r$\n$\r$\nБраузер выходит в интернет только через прокси: если он недоступен, страницы не загрузятся."
