@@ -59,6 +59,36 @@ const TIMEZONE = tzStored === 'system' ? 'system'
   : TZ_RE.test(tzStored || '') ? tzStored : TZ_DEFAULT;
 if (TIMEZONE !== 'system') process.env.TZ = TIMEZONE; // для процессов Chromium (воркеры и т.п.)
 
+// ---------- Язык браузера по региону часового пояса ----------
+// navigator.language(s), Accept-Language и формат дат/чисел (Intl) — как у жителя региона
+const TZ_LOCALE = {
+  'Asia/Singapore': 'en-SG', 'Asia/Shanghai': 'zh-CN', 'Asia/Hong_Kong': 'zh-HK', 'Asia/Taipei': 'zh-TW',
+  'Asia/Kuala_Lumpur': 'ms-MY', 'Asia/Manila': 'en-PH', 'Australia/Perth': 'en-AU', 'UTC': 'en-US',
+  'Europe/London': 'en-GB', 'Europe/Berlin': 'de-DE', 'Europe/Moscow': 'ru-RU', 'Asia/Dubai': 'ar-AE',
+  'Asia/Tokyo': 'ja-JP', 'America/New_York': 'en-US', 'America/Los_Angeles': 'en-US',
+};
+const LOCALE_RE = /^[a-z]{2,3}(-[A-Z]{2})?$/;
+function localeForTz(tz) {
+  if (TZ_LOCALE[tz]) return TZ_LOCALE[tz];
+  if (/^America\//.test(tz)) return 'en-US';
+  if (/^Europe\//.test(tz)) return 'en-GB';
+  if (/^Australia\//.test(tz)) return 'en-AU';
+  return 'en-US';
+}
+// 'auto' — по часовому поясу, 'system' — без подмены, иначе конкретная локаль
+const LANG_MODE = cfg && (cfg.browserLang === 'system' || LOCALE_RE.test(cfg.browserLang || '')) ? cfg.browserLang : 'auto';
+const LOCALE = LANG_MODE === 'system' ? null
+  : LANG_MODE === 'auto' ? (TIMEZONE === 'system' ? null : localeForTz(TIMEZONE)) : LANG_MODE;
+function acceptLanguageFor(loc) {
+  const base = loc.split('-')[0];
+  const list = [loc];
+  if (base !== loc) list.push(`${base};q=0.9`);
+  if (base !== 'en') list.push('en;q=0.8');
+  return list.join(',');
+}
+const ACCEPT_LANG = LOCALE ? acceptLanguageFor(LOCALE) : null;
+if (LOCALE) app.commandLine.appendSwitch('lang', LOCALE);
+
 // ---------- Перевод ----------
 const TR_LANGS = ['ru', 'en', 'uk', 'zh-CN', 'de', 'fr', 'es', 'it', 'pt', 'ja', 'ko', 'tr', 'ar'];
 const TR_AUTO = !cfg || cfg.autoTranslate !== false;
@@ -186,7 +216,8 @@ async function setupSession() {
   await ses.forceReloadProxyConfig?.();
 
   // Убираем "Electron" из User-Agent, чтобы выглядеть как обычный Chrome
-  ses.setUserAgent(chromeLikeUA(ses.getUserAgent()));
+  if (ACCEPT_LANG) ses.setUserAgent(chromeLikeUA(ses.getUserAgent()), ACCEPT_LANG);
+  else ses.setUserAgent(chromeLikeUA(ses.getUserAgent()));
 
   const allowed = new Set(['fullscreen', 'clipboard-sanitized-write']);
   ses.setPermissionRequestHandler((_wc, perm, cb) => cb(allowed.has(perm)));
@@ -229,6 +260,32 @@ async function setupSession() {
   });
 
   ses.on('will-download', (_e, item) => trackDownload(item));
+}
+
+// ---------- Проверка отправителя IPC ----------
+// Команды интерфейса принимаются только от панели браузера, настройки —
+// только из окна настроек, перевод — только от вкладок. Взломанная страница
+// не сможет, например, подменить прокси через settings:save.
+const SETTINGS_CHANNELS = new Set(['settings:get', 'settings:save', 'data:clear']);
+const TAB_CHANNELS = new Set(['tr:config', 'tr:translate', 'tr:state']);
+function senderAllowed(ch, e) {
+  const s = e && e.sender;
+  if (!s) return false;
+  if (TAB_CHANNELS.has(ch)) return !!tabBySender(s);
+  if (SETTINGS_CHANNELS.has(ch)) return !!(settingsWin && !settingsWin.isDestroyed() && s === settingsWin.webContents);
+  return !!(ui && !ui.webContents.isDestroyed() && s === ui.webContents);
+}
+function ipcOn(ch, fn) {
+  ipcMain.on(ch, (e, ...a) => {
+    if (e && e.sender && !senderAllowed(ch, e)) return logError('ipc-blocked', ch);
+    return fn(e, ...a); // e пустой — вызов изнутри главного процесса (ipcMain.emit)
+  });
+}
+function ipcHandle(ch, fn) {
+  ipcMain.handle(ch, (e, ...a) => {
+    if (!senderAllowed(ch, e)) { logError('ipc-blocked', ch); return null; }
+    return fn(e, ...a);
+  });
 }
 
 // ---------- Загрузки ----------
@@ -300,33 +357,33 @@ function trackDownload(item) {
 }
 
 const dlById = (id) => downloads.find(x => x.id === id);
-ipcMain.on('dl:cancel', (_e, id) => { const d = dlById(id); if (d && d.item) d.item.cancel(); });
-ipcMain.on('dl:pause', (_e, id) => {
+ipcOn('dl:cancel', (_e, id) => { const d = dlById(id); if (d && d.item) d.item.cancel(); });
+ipcOn('dl:pause', (_e, id) => {
   const d = dlById(id);
   if (!d || !d.item) return;
   if (d.item.isPaused()) { if (d.item.canResume()) d.item.resume(); } else d.item.pause();
   d.paused = d.item.isPaused();
   sendDownloads(true);
 });
-ipcMain.on('dl:retry', (_e, id) => {
+ipcOn('dl:retry', (_e, id) => {
   const d = dlById(id);
   if (!d || !d.item) return;
   if (d.item.canResume()) d.item.resume();
 });
-ipcMain.on('dl:open', (_e, id) => {
+ipcOn('dl:open', (_e, id) => {
   const d = dlById(id);
   if (d && d.state === 'completed' && fs.existsSync(d.path)) shell.openPath(d.path);
 });
-ipcMain.on('dl:show', (_e, id) => {
+ipcOn('dl:show', (_e, id) => {
   const d = dlById(id);
   if (d && fs.existsSync(d.path)) shell.showItemInFolder(d.path);
   else { fs.mkdirSync(DL_DIR, { recursive: true }); shell.openPath(DL_DIR); }
 });
-ipcMain.on('dl:clear', () => {
+ipcOn('dl:clear', () => {
   for (let i = downloads.length - 1; i >= 0; i--) if (downloads[i].state !== 'progressing') downloads.splice(i, 1);
   sendDownloads(true);
 });
-ipcMain.on('dl:panel', (_e, open) => setDownloadsPanel(!!open));
+ipcOn('dl:panel', (_e, open) => setDownloadsPanel(!!open));
 
 // Панель загрузок рисуется в той же панели интерфейса: на время показа
 // она растягивается на всё окно (прозрачная) и поднимается поверх страницы
@@ -475,7 +532,7 @@ function newTab(url = START_URL) {
   const tab = { id, view, errorUrl: null, tr: null };
   const wc = view.webContents;
   wc.setWebRTCIPHandlingPolicy('disable_non_proxied_udp');
-  setupTimezone(wc);
+  setupEmulation(wc);
   wc.once('destroyed', () => dropDeadTab(tab));
   wc.on('render-process-gone', (_e, d) => {
     if (d.reason === 'clean-exit') return;
@@ -517,12 +574,44 @@ function newTab(url = START_URL) {
 
 // Подмена часового пояса через DevTools-протокол: страница, iframe-ы
 // из других процессов и воркеры видят TIMEZONE вместо системного.
-function setupTimezone(wc) {
-  if (TIMEZONE === 'system') return;
+// Подмены через DevTools-протокол для страницы, iframe-ов из других процессов и воркеров:
+// часовой пояс, язык (navigator.language, Intl, Accept-Language) и Client Hints
+// (navigator.userAgentData / Sec-CH-UA) как у обычного Google Chrome.
+function uaMetadata() {
+  const major = process.versions.chrome.split('.')[0];
+  const full = process.versions.chrome;
+  return {
+    brands: [
+      { brand: 'Google Chrome', version: major }, { brand: 'Chromium', version: major },
+      { brand: 'Not_A Brand', version: '24' },
+    ],
+    fullVersionList: [
+      { brand: 'Google Chrome', version: full }, { brand: 'Chromium', version: full },
+      { brand: 'Not_A Brand', version: '24.0.0.0' },
+    ],
+    fullVersion: full, platform: 'Windows', platformVersion: '19.0.0',
+    architecture: 'x86', model: '', mobile: false, bitness: '64', wow64: false,
+  };
+}
+// Внутренние страницы браузера никуда не переходят и не открывают окна
+function lockInternalPage(wc) {
+  wc.on('will-navigate', (e) => e.preventDefault());
+  wc.setWindowOpenHandler(() => ({ action: 'deny' }));
+}
+
+function setupEmulation(wc) {
   const dbg = wc.debugger;
   const send = (m, p, sid) => dbg.sendCommand(m, p || {}, sid).catch(() => {});
+  const uaOverride = {
+    userAgent: chromeLikeUA(ses.getUserAgent()),
+    platform: 'Win32',
+    userAgentMetadata: uaMetadata(),
+  };
+  if (ACCEPT_LANG) uaOverride.acceptLanguage = ACCEPT_LANG;
   const apply = (sid) => Promise.allSettled([
-    send('Emulation.setTimezoneOverride', { timezoneId: TIMEZONE }, sid),
+    TIMEZONE !== 'system' ? send('Emulation.setTimezoneOverride', { timezoneId: TIMEZONE }, sid) : null,
+    LOCALE ? send('Emulation.setLocaleOverride', { locale: LOCALE }, sid) : null,
+    send('Emulation.setUserAgentOverride', uaOverride, sid),
     send('Target.setAutoAttach', { autoAttach: true, waitForDebuggerOnStart: true, flatten: true }, sid),
   ]).then(() => { if (sid) send('Runtime.runIfWaitingForDebugger', {}, sid); });
   try { dbg.attach('1.3'); } catch { return; }
@@ -660,7 +749,7 @@ function setupPopup(popup) {
   const pwc = popup.webContents;
   popup.setMenu(null);
   pwc.setWebRTCIPHandlingPolicy('disable_non_proxied_udp');
-  setupTimezone(pwc);
+  setupEmulation(pwc);
   pwc.setWindowOpenHandler(openHandler);
   pwc.on('did-create-window', setupPopup);
   pwc.on('will-navigate', (e, u) => { if (!/^(https?|about):/i.test(e.url || u || '')) e.preventDefault(); });
@@ -792,6 +881,7 @@ function createMainWindow() {
   });
   ui.setBackgroundColor('#00000000');
   win.contentView.addChildView(ui);
+  lockInternalPage(ui.webContents);
   ui.webContents.loadFile(path.join(__dirname, 'ui', 'index.html'));
   ui.webContents.on('before-input-event', (e, input) => handleShortcut(e, input));
   ui.webContents.once('did-finish-load', () => {
@@ -816,6 +906,7 @@ function openSettings() {
     icon: path.join(__dirname, 'ui', 'icon.png'),
     webPreferences: { preload: path.join(__dirname, 'preload.js'), contextIsolation: true, sandbox: true },
   });
+  lockInternalPage(settingsWin.webContents);
   settingsWin.loadFile(path.join(__dirname, 'ui', 'settings.html'));
   settingsWin.on('closed', () => {
     settingsWin = null;
@@ -824,23 +915,23 @@ function openSettings() {
 }
 
 // ---------- IPC ----------
-ipcMain.on('tab:new', () => newTab());
-ipcMain.on('tab:close', (_e, id) => closeTab(id));
-ipcMain.on('tab:switch', (_e, id) => activate(id));
-ipcMain.on('nav:go', (_e, text) => {
+ipcOn('tab:new', () => newTab());
+ipcOn('tab:close', (_e, id) => closeTab(id));
+ipcOn('tab:switch', (_e, id) => activate(id));
+ipcOn('nav:go', (_e, text) => {
   const url = normalizeInput(text);
   const t = activeTab();
   if (url && t) t.view.webContents.loadURL(url).catch(() => {});
 });
-ipcMain.on('nav:back', () => activeTab()?.view.webContents.navigationHistory?.goBack());
-ipcMain.on('nav:fwd', () => activeTab()?.view.webContents.navigationHistory?.goForward());
-ipcMain.on('nav:reload', () => activeTab()?.view.webContents.reload());
-ipcMain.on('nav:stop', () => activeTab()?.view.webContents.stop());
-ipcMain.on('ip:check', () => { proxyStatus = { state: 'connecting' }; sendProxyStatus(); checkProxy(); });
-ipcMain.on('settings:open', () => openSettings());
-ipcMain.on('downloads:open', () => { fs.mkdirSync(DL_DIR, { recursive: true }); shell.openPath(DL_DIR); });
+ipcOn('nav:back', () => activeTab()?.view.webContents.navigationHistory?.goBack());
+ipcOn('nav:fwd', () => activeTab()?.view.webContents.navigationHistory?.goForward());
+ipcOn('nav:reload', () => activeTab()?.view.webContents.reload());
+ipcOn('nav:stop', () => activeTab()?.view.webContents.stop());
+ipcOn('ip:check', () => { proxyStatus = { state: 'connecting' }; sendProxyStatus(); checkProxy(); });
+ipcOn('settings:open', () => openSettings());
+ipcOn('downloads:open', () => { fs.mkdirSync(DL_DIR, { recursive: true }); shell.openPath(DL_DIR); });
 
-ipcMain.on('bm:toggle', () => {
+ipcOn('bm:toggle', () => {
   const t = activeTab();
   if (!t) return;
   const wc = t.view.webContents;
@@ -851,20 +942,20 @@ ipcMain.on('bm:toggle', () => {
   else bookmarks.push({ url, title: (wc.getTitle() || new URL(url).hostname).slice(0, 60) });
   saveBookmarks();
 });
-ipcMain.on('bm:open', (_e, { index, inNewTab }) => {
+ipcOn('bm:open', (_e, { index, inNewTab }) => {
   const b = bookmarks[index];
   if (!b || !/^https?:/i.test(b.url)) return;
   const t = activeTab();
   if (inNewTab || !t) newTab(b.url);
   else t.view.webContents.loadURL(b.url).catch(() => {});
 });
-ipcMain.on('bm:rename', (_e, { index, title }) => {
+ipcOn('bm:rename', (_e, { index, title }) => {
   if (!bookmarks[index]) return;
   const s = String(title || '').trim().slice(0, 60);
   if (s) bookmarks[index].title = s;
   saveBookmarks();
 });
-ipcMain.on('bm:menu', (_e, index) => {
+ipcOn('bm:menu', (_e, index) => {
   const b = bookmarks[index];
   if (!b) return;
   const move = (d) => {
@@ -885,11 +976,11 @@ ipcMain.on('bm:menu', (_e, index) => {
 });
 
 // ---------- Перевод: IPC ----------
-ipcMain.handle('tr:config', (e, host) => {
+ipcHandle('tr:config', (e, host) => {
   if (!tabBySender(e.sender)) return null;
   return { auto: TR_AUTO, target: TR_LANG, excluded: trExclude.has(String(host || '')) };
 });
-ipcMain.handle('tr:translate', async (e, texts, target) => {
+ipcHandle('tr:translate', async (e, texts, target) => {
   if (!tabBySender(e.sender) || !ses) return { ok: false };
   if (!Array.isArray(texts) || texts.length > 100) return { ok: false };
   const tl = TR_LANGS.includes(target) ? target : TR_LANG;
@@ -921,13 +1012,13 @@ ipcMain.handle('tr:translate', async (e, texts, target) => {
   }
   return { ok: true, out, lang };
 });
-ipcMain.on('tr:state', (e, st) => {
+ipcOn('tr:state', (e, st) => {
   const t = tabBySender(e.sender);
   if (!t) return;
   t.tr = { active: !!(st && st.active), lang: st && typeof st.lang === 'string' ? st.lang : null };
   sendTabs();
 });
-ipcMain.on('tr:toggle', () => {
+ipcOn('tr:toggle', () => {
   const t = activeTab();
   if (!t) return;
   const wc = t.view.webContents;
@@ -965,23 +1056,24 @@ function setupUpdater() {
   setTimeout(check, 15_000);
   setInterval(check, 3 * 60 * 60 * 1000);
 }
-ipcMain.on('update:install', () => {
+ipcOn('update:install', () => {
   if (updateReady && autoUpdater) autoUpdater.quitAndInstall(true, true);
 });
 
-ipcMain.handle('settings:get', () => {
+ipcHandle('settings:get', () => {
   const c = cfg || {};
   return {
     type: c.type || 'socks5', host: c.host || '', port: c.port || '',
     user: c.user || '', hasPass: !!c.pass, incognito: !!c.incognito,
     noCache: c.noCache !== false, block3p: c.block3p !== false,
     timezone: TIMEZONE, autoTranslate: TR_AUTO, translateTo: TR_LANG,
+    browserLang: LANG_MODE, tzLocales: TZ_LOCALE,
     version: app.getVersion(),
     configured,
   };
 });
 
-ipcMain.handle('settings:save', (_e, data) => {
+ipcHandle('settings:save', (_e, data) => {
   const type = PROXY_TYPES.includes(data.type) ? data.type : 'http';
   const host = String(data.host || '').trim();
   const port = parseInt(data.port, 10);
@@ -996,6 +1088,7 @@ ipcMain.handle('settings:save', (_e, data) => {
     noCache: data.noCache !== false, block3p: data.block3p !== false,
     timezone: (data.timezone === 'system' || TZ_RE.test(data.timezone || '')) ? data.timezone : TZ_DEFAULT,
     tzV2: true,
+    browserLang: (data.browserLang === 'system' || LOCALE_RE.test(data.browserLang || '')) ? data.browserLang : 'auto',
     autoTranslate: data.autoTranslate !== false,
     translateTo: TR_LANGS.includes(data.translateTo) ? data.translateTo : 'ru',
   };
@@ -1007,7 +1100,7 @@ ipcMain.handle('settings:save', (_e, data) => {
   return { ok: true };
 });
 
-ipcMain.handle('data:clear', async () => {
+ipcHandle('data:clear', async () => {
   if (!ses) return { ok: false };
   await ses.clearStorageData();
   await ses.clearCache();
@@ -1024,9 +1117,26 @@ app.whenReady().then(async () => {
   createMainWindow();
   setupUpdater();
   if (SMOKE) {
-    setTimeout(() => {
+    setTimeout(async () => {
+      let page = null, uiOk = false;
+      try {
+        const t = activeTab();
+        page = await t.view.webContents.executeJavaScript(`({
+          language: navigator.language, languages: navigator.languages,
+          tz: Intl.DateTimeFormat().resolvedOptions().timeZone,
+          intlLocale: Intl.DateTimeFormat().resolvedOptions().locale,
+          brands: navigator.userAgentData ? navigator.userAgentData.brands.map(b => b.brand) : null,
+          ua: navigator.userAgent })`);
+      } catch (e) { smokeErrors.push('page probe: ' + e); }
+      try { uiOk = await ui.webContents.executeJavaScript('!!document.getElementById("addr") && !!document.getElementById("dlpanel")'); } catch {}
+      const expectLang = LOCALE || null;
+      const pageOk = !!page && (!expectLang || page.language === expectLang)
+        && (TIMEZONE === 'system' || page.tz === TIMEZONE)
+        && !!(page.brands && page.brands.includes('Google Chrome'))
+        && !/Electron|SBrowser/i.test(page.ua);
       const res = {
-        ok: smokeErrors.length === 0 && !!win && tabs.length > 0 && !ui.webContents.isDestroyed()
+        page, uiOk, pageOk, expectLang,
+        ok: smokeErrors.length === 0 && !!win && tabs.length > 0 && uiOk && pageOk
           && !/Electron|SBrowser|S Browser|s-browser/i.test(ses.getUserAgent()),
         tabs: tabs.length,
         electron: process.versions.electron,

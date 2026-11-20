@@ -144,7 +144,10 @@ async function init() {
   if (!c) return;
   target = c.target || 'ru';
   const pageLang = (document.documentElement.getAttribute('lang') || '').trim();
-  if (c.auto && !c.excluded && !sameLang(pageLang, target)) start(true);
+  // Страницы входа/оплаты (есть поле пароля или карты) автоматически не переводим:
+  // их текст не должен уходить в переводчик без вашего решения
+  const sensitive = !!document.querySelector('input[type="password"], input[autocomplete^="cc-"]');
+  if (c.auto && !c.excluded && !sensitive && !sameLang(pageLang, target)) start(true);
   else report();
 }
 

@@ -43,6 +43,10 @@ jobs:
           grep -qi "electron-updater" asar.txt
           grep -qi "tab-preload.js" asar.txt
           echo "OK: updater and tab preload are inside the app"
+          npx --yes @electron/fuses read --app "dist/win-unpacked/S Browser.exe" | tee fuses.txt
+          grep -Eq "RunAsNode is Disabled" fuses.txt
+          grep -Eq "EnableNodeCliInspectArguments is Disabled" fuses.txt
+          grep -Eq "OnlyLoadAppFromAsar is Enabled" fuses.txt
 
       - name: Smoke test (launch the app on Windows)
         shell: pwsh
