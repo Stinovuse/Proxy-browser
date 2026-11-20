@@ -1,0 +1,68 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; style-src 'self' 'unsafe-inline'; script-src 'self'">
+<title>Proxy Browser</title>
+<style>
+  * { box-sizing: border-box; }
+  html, body { margin: 0; height: 112px; overflow: hidden; background: #1e1f22; color: #ddd;
+    font: 13px system-ui, -apple-system, "Segoe UI", sans-serif; user-select: none; }
+  #tabs { display: flex; height: 36px; padding: 4px 6px 0; gap: 4px; align-items: flex-end; }
+  .tab { display: flex; align-items: center; gap: 6px; min-width: 60px; max-width: 220px; flex: 1 1 180px;
+    height: 32px; padding: 0 8px 0 12px; background: #2b2d31; border-radius: 8px 8px 0 0; cursor: default; }
+  .tab.active { background: #3a3d43; }
+  .tab .t { flex: 1; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+  .tab .x { width: 18px; height: 18px; border-radius: 4px; text-align: center; line-height: 18px; opacity: .6; }
+  .tab .x:hover { background: #55585f; opacity: 1; }
+  .spin { width: 10px; height: 10px; border: 2px solid #888; border-top-color: transparent; border-radius: 50%;
+    animation: r .8s linear infinite; flex: none; }
+  @keyframes r { to { transform: rotate(360deg); } }
+  #newtab { width: 28px; height: 28px; border: 0; background: none; color: #bbb; font-size: 18px; border-radius: 6px; margin-bottom: 2px; }
+  #newtab:hover { background: #2b2d31; }
+  #bar { display: flex; height: 44px; align-items: center; gap: 4px; padding: 0 8px; background: #3a3d43; }
+  #bar button { width: 30px; height: 30px; border: 0; background: none; color: #ddd; border-radius: 6px; font-size: 16px; }
+  #bar button:hover:not(:disabled) { background: #4a4d55; }
+  #bar button:disabled { opacity: .35; }
+  #addr { flex: 1; height: 30px; border: 1px solid #4a4d55; border-radius: 15px; background: #1e1f22;
+    color: #eee; padding: 0 14px; font: inherit; outline: none; user-select: text; }
+  #addr:focus { border-color: #6c8cff; }
+  #ip { padding: 4px 10px; border-radius: 12px; font-size: 12px; white-space: nowrap; cursor: pointer; }
+  #ip.ok { background: #1f3d2a; color: #7ee2a0; }
+  #ip.bad { background: #4a1f22; color: #ff8a8a; }
+  #ip.wait { background: #33363c; color: #aaa; }
+  #star { font-size: 18px !important; }
+  #star.on { color: #ffd166; }
+  #bm { display: flex; height: 32px; align-items: center; gap: 2px; padding: 0 8px; background: #3a3d43;
+    border-bottom: 1px solid #2b2d31; overflow: hidden; }
+  .bm { display: flex; align-items: center; gap: 6px; max-width: 180px; height: 24px; padding: 0 8px;
+    border-radius: 12px; cursor: default; white-space: nowrap; }
+  .bm:hover { background: #4a4d55; }
+  .bm .ic { flex: none; width: 16px; height: 16px; border-radius: 4px; color: #fff; font-size: 10px;
+    font-weight: 600; text-align: center; line-height: 16px; }
+  .bm .n { overflow: hidden; text-overflow: ellipsis; }
+  .bm input { width: 130px; height: 20px; background: #1e1f22; color: #eee; border: 1px solid #6c8cff;
+    border-radius: 4px; font: inherit; padding: 0 4px; outline: none; }
+  #bmhint { color: #888; font-size: 12px; padding-left: 4px; }
+  #toast { position: fixed; right: 12px; top: 4px; background: #6c8cff; color: #fff; padding: 4px 10px;
+    border-radius: 6px; opacity: 0; transition: opacity .2s; pointer-events: none; }
+  #toast.show { opacity: 1; }
+</style>
+</head>
+<body>
+  <div id="tabs"><button id="newtab" title="Новая вкладка (Ctrl+T)">+</button></div>
+  <div id="bar">
+    <button id="back" title="Назад (Alt+←)">←</button>
+    <button id="fwd" title="Вперёд (Alt+→)">→</button>
+    <button id="reload" title="Обновить (Ctrl+R)">⟳</button>
+    <input id="addr" spellcheck="false" placeholder="Адрес или поиск">
+    <button id="star" title="Добавить в закладки (Ctrl+D)">☆</button>
+    <span id="ip" class="wait" title="Внешний IP (через прокси). Нажмите, чтобы проверить">проверка…</span>
+    <button id="dl" title="Папка загрузок">⤓</button>
+    <button id="settings" title="Настройки прокси">⚙</button>
+  </div>
+  <div id="bm"><span id="bmhint">Нажмите ☆ или Ctrl+D, чтобы закрепить страницу здесь</span></div>
+  <div id="toast"></div>
+  <script src="index.js"></script>
+</body>
+</html>

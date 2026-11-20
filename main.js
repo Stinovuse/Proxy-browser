@@ -1,0 +1,480 @@
+'use strict';
+/*
+ * Proxy Browser — Chromium (Electron), выходящий в сеть ТОЛЬКО через прокси.
+ *
+ * Защита:
+ *  - прокси задаётся флагом Chromium + на уровне сессии, без fallback на DIRECT;
+ *    если прокси упал — страницы просто не грузятся (kill switch);
+ *  - локальный DNS запрещён (host-resolver-rules), кроме адреса самого прокси;
+ *  - WebRTC пускается только через прокси, QUIC/UDP отключён;
+ *  - localhost и локальная сеть тоже идут через прокси (<-loopback>);
+ *  - данные браузера в отдельной папке, file:// заблокирован,
+ *    доступ к камере/микрофону/геолокации/USB и т.п. запрещён;
+ *  - загрузки сохраняются только в собственную папку приложения.
+ */
+const {
+  app, BaseWindow, BrowserWindow, WebContentsView, Menu,
+  ipcMain, session, safeStorage, shell,
+} = require('electron');
+const path = require('path');
+const fs = require('fs');
+
+// ---------- Изолированная папка данных ----------
+const DATA_DIR = path.join(app.getPath('appData'), 'ProxyBrowser');
+fs.mkdirSync(DATA_DIR, { recursive: true });
+app.setPath('userData', DATA_DIR);
+const CFG_PATH = path.join(DATA_DIR, 'config.json');
+const DL_DIR = path.join(DATA_DIR, 'Downloads');
+
+const START_URL = 'https://duckduckgo.com/';
+const SEARCH_URL = 'https://duckduckgo.com/?q=';
+const IP_CHECK_URL = 'https://api.ipify.org?format=json';
+const TOOLBAR_H = 112;
+const BM_PATH = path.join(DATA_DIR, 'bookmarks.json');
+const PROXY_TYPES = ['http', 'https', 'socks5', 'socks4'];
+
+function readCfg() {
+  try { return JSON.parse(fs.readFileSync(CFG_PATH, 'utf8')); } catch { return null; }
+}
+const cfg = readCfg();
+const configured = !!(cfg && cfg.host && cfg.port && PROXY_TYPES.includes(cfg.type));
+const proxyUrl = configured ? `${cfg.type}://${cfg.host}:${cfg.port}` : null;
+
+// ---------- Флаги Chromium (до app.ready) ----------
+if (configured) {
+  app.commandLine.appendSwitch('proxy-server', proxyUrl);
+  app.commandLine.appendSwitch('proxy-bypass-list', '<-loopback>');
+  // Запрет любого локального DNS, кроме адреса прокси -> нет DNS-утечек
+  app.commandLine.appendSwitch('host-resolver-rules', `MAP * ~NOTFOUND , EXCLUDE ${cfg.host}`);
+} else {
+  // Прокси не настроен — сеть полностью закрыта
+  app.commandLine.appendSwitch('host-resolver-rules', 'MAP * ~NOTFOUND');
+  app.commandLine.appendSwitch('proxy-server', 'http://127.0.0.1:9');
+}
+app.commandLine.appendSwitch('force-webrtc-ip-handling-policy', 'disable_non_proxied_udp');
+app.commandLine.appendSwitch('webrtc-ip-handling-policy', 'disable_non_proxied_udp');
+app.commandLine.appendSwitch('disable-quic');
+app.commandLine.appendSwitch('dns-prefetch-disable');
+app.commandLine.appendSwitch('disable-background-networking');
+app.commandLine.appendSwitch('disable-features', 'NetworkPrediction,AutofillServerCommunication,MediaRouter');
+// Кэш на диске не нужен: всё, что сайт мог бы туда положить, не сохраняется
+const NO_CACHE = !cfg || cfg.noCache !== false;
+const BLOCK_3P = !cfg || cfg.block3p !== false;
+if (NO_CACHE) app.commandLine.appendSwitch('disk-cache-size', '1');
+
+if (!app.requestSingleInstanceLock()) { app.quit(); }
+
+// ---------- Пароль прокси (шифруется средствами ОС, если доступно) ----------
+function encryptPass(p) {
+  if (!p) return null;
+  if (safeStorage.isEncryptionAvailable()) return { enc: true, v: safeStorage.encryptString(p).toString('base64') };
+  return { enc: false, v: Buffer.from(p, 'utf8').toString('base64') };
+}
+function decryptPass(o) {
+  if (!o) return '';
+  try {
+    const b = Buffer.from(o.v, 'base64');
+    return o.enc ? safeStorage.decryptString(b) : b.toString('utf8');
+  } catch { return ''; }
+}
+
+let authAttempts = 0;
+app.on('login', (event, _wc, _details, authInfo, callback) => {
+  if (!authInfo.isProxy) return; // авторизацию сайтов не трогаем — Chromium покажет свою
+  event.preventDefault();
+  if (!configured || !cfg.user || authAttempts >= 3) return callback(); // отмена
+  authAttempts++;
+  callback(cfg.user, decryptPass(cfg.pass));
+});
+
+// ---------- Сессия ----------
+let ses;
+async function setupSession() {
+  ses = session.fromPartition(cfg.incognito ? 'proxy-temp' : 'persist:proxy');
+  await ses.setProxy({ proxyRules: proxyUrl, proxyBypassRules: '<-loopback>' });
+  await ses.forceReloadProxyConfig?.();
+
+  // Убираем "Electron" из User-Agent, чтобы выглядеть как обычный Chrome
+  ses.setUserAgent(ses.getUserAgent().replace(/\s(Electron|proxy-browser|Proxy Browser)\/\S+/g, ''));
+
+  const allowed = new Set(['fullscreen', 'clipboard-sanitized-write']);
+  ses.setPermissionRequestHandler((_wc, perm, cb) => cb(allowed.has(perm)));
+  ses.setPermissionCheckHandler((_wc, perm) => allowed.has(perm));
+  ses.setDevicePermissionHandler(() => false);
+
+  // Только веб-схемы. file:// и прочее — блок.
+  ses.webRequest.onBeforeRequest((d, cb) => {
+    cb({ cancel: !/^(https?|wss?|data|blob):/i.test(d.url) });
+  });
+
+  // ---------- Защита кэша и от трекинга ----------
+  if (NO_CACHE) {
+    // Стираем всё, что могло остаться с прошлого запуска
+    await ses.clearCache();
+    await ses.clearStorageData({ storages: ['cachestorage', 'serviceworkers', 'shadercache'] });
+  }
+
+  ses.webRequest.onBeforeSendHeaders((d, cb) => {
+    const h = d.requestHeaders;
+    for (const k of Object.keys(h)) {
+      const lk = k.toLowerCase();
+      // ETag / Last-Modified — классические «суперкуки» через кэш
+      if (NO_CACHE && (lk === 'if-none-match' || lk === 'if-modified-since')) delete h[k];
+      // Куки не уходят на сторонние домены (рекламные сети, счётчики)
+      if (BLOCK_3P && lk === 'cookie' && isThirdParty(d)) delete h[k];
+    }
+    cb({ requestHeaders: h });
+  });
+
+  ses.webRequest.onHeadersReceived((d, cb) => {
+    const h = d.responseHeaders || {};
+    for (const k of Object.keys(h)) {
+      const lk = k.toLowerCase();
+      if (NO_CACHE && ['cache-control', 'expires', 'etag', 'last-modified', 'pragma'].includes(lk)) delete h[k];
+      if (BLOCK_3P && lk === 'set-cookie' && isThirdParty(d)) delete h[k];
+    }
+    if (NO_CACHE) h['Cache-Control'] = ['no-store'];
+    cb({ responseHeaders: h });
+  });
+
+  ses.on('will-download', (_e, item) => {
+    fs.mkdirSync(DL_DIR, { recursive: true });
+    const safeName = path.basename(item.getFilename()).replace(/[<>:"/\\|?*\x00-\x1f]/g, '_') || 'download';
+    item.setSavePath(path.join(DL_DIR, safeName));
+    item.once('done', (_ev, state) => {
+      toast(state === 'completed' ? `Загружено: ${safeName}` : `Загрузка не удалась: ${safeName}`);
+    });
+  });
+}
+
+// Упрощённое определение «сайта» (eTLD+1): example.com, example.co.uk
+function siteOf(url) {
+  try {
+    const host = new URL(url).hostname.replace(/^\[|\]$/g, '');
+    if (/^[\d.]+$/.test(host) || host.includes(':')) return host;
+    const p = host.split('.');
+    const sld = p[p.length - 2];
+    const n = (p.length > 2 && p[p.length - 1].length === 2 &&
+      ['co', 'com', 'org', 'net', 'gov', 'edu', 'ac', 'msk', 'spb'].includes(sld)) ? 3 : 2;
+    return p.slice(-n).join('.');
+  } catch { return null; }
+}
+function isThirdParty(d) {
+  if (d.resourceType === 'mainFrame' || !d.webContents) return false;
+  const top = siteOf(d.webContents.getURL());
+  const req = siteOf(d.url);
+  return !!(top && req && top !== req);
+}
+
+// Сессия интерфейса — никакой сети вообще
+function lockDefaultSession() {
+  session.defaultSession.webRequest.onBeforeRequest((d, cb) => {
+    cb({ cancel: !/^(file|devtools):/i.test(d.url) });
+  });
+}
+
+// ---------- Окно и вкладки ----------
+let win, ui;
+let tabs = [];
+let activeId = null;
+let nextId = 1;
+
+function layout() {
+  if (!win) return;
+  const [w, h] = win.getContentSize();
+  ui.setBounds({ x: 0, y: 0, width: w, height: TOOLBAR_H });
+  for (const t of tabs) t.view.setBounds({ x: 0, y: TOOLBAR_H, width: w, height: Math.max(0, h - TOOLBAR_H) });
+}
+
+function activeTab() { return tabs.find(t => t.id === activeId); }
+
+function tabState() {
+  return tabs.map(t => {
+    const wc = t.view.webContents;
+    const nh = wc.navigationHistory;
+    return {
+      id: t.id,
+      title: wc.getTitle() || 'Новая вкладка',
+      url: t.errorUrl || wc.getURL(),
+      loading: wc.isLoading(),
+      active: t.id === activeId,
+      bookmarked: bookmarks.some(b => b.url === wc.getURL()),
+      canBack: nh ? nh.canGoBack() : wc.canGoBack(),
+      canFwd: nh ? nh.canGoForward() : wc.canGoForward(),
+    };
+  });
+}
+// ---------- Закладки (локальный файл, сайтам недоступен) ----------
+let bookmarks = [];
+try { bookmarks = JSON.parse(fs.readFileSync(BM_PATH, 'utf8')).filter(b => b && /^https?:/i.test(b.url)); } catch {}
+function saveBookmarks() {
+  fs.writeFileSync(BM_PATH, JSON.stringify(bookmarks, null, 2), { mode: 0o600 });
+  sendBookmarks();
+  sendTabs();
+}
+function sendBookmarks() { if (ui && !ui.webContents.isDestroyed()) ui.webContents.send('bookmarks', bookmarks); }
+
+function sendTabs() { if (ui && !ui.webContents.isDestroyed()) ui.webContents.send('tabs', tabState()); }
+function toast(msg) { if (ui && !ui.webContents.isDestroyed()) ui.webContents.send('toast', msg); }
+
+function errorPage(code, desc, url) {
+  const proxyErr = /PROXY|TUNNEL|SOCKS/i.test(desc);
+  const html = `<!doctype html><meta charset="utf-8"><title>Ошибка</title>
+<body style="font:15px system-ui;background:#1e1f22;color:#ddd;display:grid;place-items:center;height:90vh">
+<div style="max-width:560px"><h2>${proxyErr ? 'Прокси недоступен' : 'Страница не загрузилась'}</h2>
+<p>${proxyErr ? 'Соединение заблокировано: прямой выход в интернет отключён.' : ''}</p>
+<p style="opacity:.7">${desc} (${code})</p>
+<p style="opacity:.5;word-break:break-all">${String(url).replace(/[<>&"]/g, '')}</p></div>`;
+  return 'data:text/html;charset=utf-8,' + encodeURIComponent(html);
+}
+
+function newTab(url = START_URL) {
+  const view = new WebContentsView({
+    webPreferences: {
+      session: ses,
+      contextIsolation: true,
+      sandbox: true,
+      nodeIntegration: false,
+      webSecurity: true,
+      spellcheck: false,
+      safeDialogs: true,
+    },
+  });
+  const id = nextId++;
+  const tab = { id, view, errorUrl: null };
+  const wc = view.webContents;
+  wc.setWebRTCIPHandlingPolicy('disable_non_proxied_udp');
+
+  wc.setWindowOpenHandler(({ url: u }) => {
+    if (/^https?:/i.test(u)) newTab(u);
+    return { action: 'deny' };
+  });
+  wc.on('will-navigate', (e, u) => { if (!/^(https?|data|about):/i.test(u)) e.preventDefault(); });
+  wc.on('did-start-navigation', (_e, _u, _inPage, isMain) => { if (isMain) tab.errorUrl = null; });
+  wc.on('did-fail-load', (_e, code, desc, u, isMain) => {
+    if (!isMain || code === -3) return; // -3 = ABORTED
+    tab.errorUrl = u;
+    wc.loadURL(errorPage(code, desc, u)).catch(() => {});
+    setTimeout(() => { tab.errorUrl = u; sendTabs(); }, 50);
+  });
+  for (const ev of ['page-title-updated', 'did-navigate', 'did-navigate-in-page', 'did-start-loading', 'did-stop-loading']) {
+    wc.on(ev, sendTabs);
+  }
+  wc.on('before-input-event', (e, input) => handleShortcut(e, input));
+
+  view.setVisible(false);
+  win.contentView.addChildView(view);
+  tabs.push(tab);
+  layout();
+  activate(id);
+  wc.loadURL(url).catch(() => {});
+}
+
+function activate(id) {
+  activeId = id;
+  for (const t of tabs) t.view.setVisible(t.id === id);
+  const t = activeTab();
+  if (t) t.view.webContents.focus();
+  sendTabs();
+}
+
+function closeTab(id) {
+  const i = tabs.findIndex(t => t.id === id);
+  if (i < 0) return;
+  const [t] = tabs.splice(i, 1);
+  win.contentView.removeChildView(t.view);
+  t.view.webContents.close();
+  if (!tabs.length) return newTab();
+  if (activeId === id) activate(tabs[Math.min(i, tabs.length - 1)].id);
+  else sendTabs();
+}
+
+function normalizeInput(text) {
+  const s = String(text || '').trim();
+  if (!s) return null;
+  if (/^https?:\/\//i.test(s)) return s;
+  if (/^[^\s]+\.[^\s]{2,}$/.test(s) && !/\s/.test(s)) return 'https://' + s;
+  return SEARCH_URL + encodeURIComponent(s);
+}
+
+function handleShortcut(e, input) {
+  if (input.type !== 'keyDown') return;
+  const mod = process.platform === 'darwin' ? input.meta : input.control;
+  const k = input.key.toLowerCase();
+  const t = activeTab();
+  if (mod && k === 't') { newTab(); e.preventDefault(); }
+  else if (mod && k === 'w') { if (t) closeTab(t.id); e.preventDefault(); }
+  else if (mod && k === 'l') { ui.webContents.focus(); ui.webContents.send('focus-address'); e.preventDefault(); }
+  else if ((mod && k === 'r') || k === 'f5') { t?.view.webContents.reload(); e.preventDefault(); }
+  else if (input.alt && k === 'arrowleft') { t?.view.webContents.navigationHistory?.goBack(); e.preventDefault(); }
+  else if (input.alt && k === 'arrowright') { t?.view.webContents.navigationHistory?.goForward(); e.preventDefault(); }
+  else if (mod && k === 'd') { ipcMain.emit('bm:toggle'); e.preventDefault(); }
+  else if (k === 'f12') { t?.view.webContents.toggleDevTools(); e.preventDefault(); }
+}
+
+async function checkIp() {
+  try {
+    const r = await ses.fetch(IP_CHECK_URL, { cache: 'no-store' });
+    const j = await r.json();
+    ui.webContents.send('ip', { ok: true, ip: j.ip });
+  } catch {
+    ui.webContents.send('ip', { ok: false });
+  }
+}
+
+function createMainWindow() {
+  win = new BaseWindow({
+    width: 1280, height: 820, minWidth: 600, minHeight: 400,
+    title: 'Proxy Browser', backgroundColor: '#1e1f22', autoHideMenuBar: true,
+    icon: path.join(__dirname, 'ui', 'icon.png'),
+  });
+  ui = new WebContentsView({
+    webPreferences: { preload: path.join(__dirname, 'preload.js'), contextIsolation: true, sandbox: true },
+  });
+  win.contentView.addChildView(ui);
+  ui.webContents.loadFile(path.join(__dirname, 'ui', 'index.html'));
+  ui.webContents.on('before-input-event', (e, input) => handleShortcut(e, input));
+  ui.webContents.once('did-finish-load', () => {
+    sendBookmarks();
+    newTab();
+    checkIp();
+    setInterval(checkIp, 60_000);
+  });
+  win.on('resize', layout);
+  win.on('closed', () => app.quit());
+  layout();
+}
+
+// ---------- Окно настроек ----------
+let settingsWin = null;
+function openSettings() {
+  if (settingsWin) return settingsWin.focus();
+  settingsWin = new BrowserWindow({
+    width: 480, height: 680, resizable: false, title: 'Настройки прокси',
+    autoHideMenuBar: true, backgroundColor: '#1e1f22',
+    icon: path.join(__dirname, 'ui', 'icon.png'),
+    webPreferences: { preload: path.join(__dirname, 'preload.js'), contextIsolation: true, sandbox: true },
+  });
+  settingsWin.loadFile(path.join(__dirname, 'ui', 'settings.html'));
+  settingsWin.on('closed', () => {
+    settingsWin = null;
+    if (!configured) app.quit();
+  });
+}
+
+// ---------- IPC ----------
+ipcMain.on('tab:new', () => newTab());
+ipcMain.on('tab:close', (_e, id) => closeTab(id));
+ipcMain.on('tab:switch', (_e, id) => activate(id));
+ipcMain.on('nav:go', (_e, text) => {
+  const url = normalizeInput(text);
+  const t = activeTab();
+  if (url && t) t.view.webContents.loadURL(url).catch(() => {});
+});
+ipcMain.on('nav:back', () => activeTab()?.view.webContents.navigationHistory?.goBack());
+ipcMain.on('nav:fwd', () => activeTab()?.view.webContents.navigationHistory?.goForward());
+ipcMain.on('nav:reload', () => activeTab()?.view.webContents.reload());
+ipcMain.on('nav:stop', () => activeTab()?.view.webContents.stop());
+ipcMain.on('ip:check', () => checkIp());
+ipcMain.on('settings:open', () => openSettings());
+ipcMain.on('downloads:open', () => { fs.mkdirSync(DL_DIR, { recursive: true }); shell.openPath(DL_DIR); });
+
+ipcMain.on('bm:toggle', () => {
+  const t = activeTab();
+  if (!t) return;
+  const wc = t.view.webContents;
+  const url = wc.getURL();
+  if (!/^https?:/i.test(url)) return;
+  const i = bookmarks.findIndex(b => b.url === url);
+  if (i >= 0) bookmarks.splice(i, 1);
+  else bookmarks.push({ url, title: (wc.getTitle() || new URL(url).hostname).slice(0, 60) });
+  saveBookmarks();
+});
+ipcMain.on('bm:open', (_e, { index, inNewTab }) => {
+  const b = bookmarks[index];
+  if (!b || !/^https?:/i.test(b.url)) return;
+  const t = activeTab();
+  if (inNewTab || !t) newTab(b.url);
+  else t.view.webContents.loadURL(b.url).catch(() => {});
+});
+ipcMain.on('bm:rename', (_e, { index, title }) => {
+  if (!bookmarks[index]) return;
+  const s = String(title || '').trim().slice(0, 60);
+  if (s) bookmarks[index].title = s;
+  saveBookmarks();
+});
+ipcMain.on('bm:menu', (_e, index) => {
+  const b = bookmarks[index];
+  if (!b) return;
+  const move = (d) => {
+    const j = index + d;
+    if (j < 0 || j >= bookmarks.length) return;
+    [bookmarks[index], bookmarks[j]] = [bookmarks[j], bookmarks[index]];
+    saveBookmarks();
+  };
+  Menu.buildFromTemplate([
+    { label: 'Открыть в новой вкладке', click: () => newTab(b.url) },
+    { label: 'Переименовать', click: () => ui.webContents.send('bm:rename-start', index) },
+    { type: 'separator' },
+    { label: '← Переместить влево', enabled: index > 0, click: () => move(-1) },
+    { label: 'Переместить вправо →', enabled: index < bookmarks.length - 1, click: () => move(1) },
+    { type: 'separator' },
+    { label: 'Удалить', click: () => { bookmarks.splice(index, 1); saveBookmarks(); } },
+  ]).popup({ window: win });
+});
+
+ipcMain.handle('settings:get', () => {
+  const c = cfg || {};
+  return {
+    type: c.type || 'socks5', host: c.host || '', port: c.port || '',
+    user: c.user || '', hasPass: !!c.pass, incognito: !!c.incognito,
+    noCache: c.noCache !== false, block3p: c.block3p !== false,
+    configured,
+  };
+});
+
+ipcMain.handle('settings:save', (_e, data) => {
+  const type = PROXY_TYPES.includes(data.type) ? data.type : 'http';
+  const host = String(data.host || '').trim();
+  const port = parseInt(data.port, 10);
+  if (!host || /[\s/]/.test(host)) return { ok: false, error: 'Некорректный адрес прокси' };
+  if (!(port > 0 && port < 65536)) return { ok: false, error: 'Некорректный порт' };
+  const user = String(data.user || '').trim();
+  if (user && type.startsWith('socks')) {
+    return { ok: false, error: 'Chromium не поддерживает SOCKS с логином/паролем. Используйте HTTP/HTTPS-прокси с авторизацией или SOCKS5 без пароля (по IP).' };
+  }
+  const next = {
+    type, host, port, user, incognito: !!data.incognito,
+    noCache: data.noCache !== false, block3p: data.block3p !== false,
+  };
+  if (data.pass) next.pass = encryptPass(data.pass);
+  else if (cfg && cfg.pass && user) next.pass = cfg.pass;
+  fs.writeFileSync(CFG_PATH, JSON.stringify(next, null, 2), { mode: 0o600 });
+  app.relaunch();
+  app.exit(0);
+  return { ok: true };
+});
+
+ipcMain.handle('data:clear', async () => {
+  if (!ses) return { ok: false };
+  await ses.clearStorageData();
+  await ses.clearCache();
+  await ses.clearAuthCache();
+  return { ok: true };
+});
+
+// ---------- Старт ----------
+app.whenReady().then(async () => {
+  Menu.setApplicationMenu(null);
+  lockDefaultSession();
+  if (!configured) return openSettings();
+  await setupSession();
+  createMainWindow();
+});
+
+app.on('web-contents-created', (_e, wc) => {
+  wc.on('will-attach-webview', e => e.preventDefault()); // никаких <webview>
+});
+
+app.on('second-instance', () => { if (win) win.focus(); });
+app.on('window-all-closed', () => app.quit());

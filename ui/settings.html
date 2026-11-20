@@ -1,0 +1,55 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; style-src 'self' 'unsafe-inline'; script-src 'self'">
+<title>Настройки прокси</title>
+<style>
+  * { box-sizing: border-box; }
+  body { margin: 0; padding: 22px; background: #1e1f22; color: #ddd; font: 14px system-ui, "Segoe UI", sans-serif; }
+  h2 { margin: 0 0 16px; font-size: 18px; }
+  label { display: block; margin: 12px 0 4px; color: #aaa; font-size: 12px; }
+  input, select { width: 100%; height: 34px; padding: 0 10px; background: #2b2d31; color: #eee;
+    border: 1px solid #4a4d55; border-radius: 6px; font: inherit; outline: none; }
+  input:focus, select:focus { border-color: #6c8cff; }
+  .row { display: flex; gap: 10px; } .row > div { flex: 1; } .row > .port { flex: 0 0 110px; }
+  .check { display: flex; align-items: center; gap: 8px; margin-top: 16px; color: #ccc; }
+  .check input { width: auto; height: auto; }
+  .hint { font-size: 12px; color: #888; margin-top: 6px; }
+  .err { color: #ff8a8a; min-height: 18px; margin-top: 12px; font-size: 13px; }
+  .btns { display: flex; gap: 10px; margin-top: 14px; }
+  button { height: 36px; padding: 0 16px; border: 0; border-radius: 6px; font: inherit; cursor: pointer; }
+  #save { background: #6c8cff; color: #fff; flex: 1; }
+  #clear { background: #3a3d43; color: #ddd; }
+</style>
+</head>
+<body>
+  <h2>Прокси</h2>
+  <label for="type">Тип</label>
+  <select id="type">
+    <option value="socks5">SOCKS5</option>
+    <option value="http">HTTP</option>
+    <option value="https">HTTPS</option>
+    <option value="socks4">SOCKS4</option>
+  </select>
+  <div class="row">
+    <div><label for="host">Адрес</label><input id="host" placeholder="1.2.3.4 или proxy.example.com"></div>
+    <div class="port"><label for="port">Порт</label><input id="port" inputmode="numeric" placeholder="1080"></div>
+  </div>
+  <label for="user">Логин (необязательно)</label>
+  <input id="user" autocomplete="off">
+  <label for="pass">Пароль</label>
+  <input id="pass" type="password" autocomplete="off">
+  <div class="hint" id="passhint"></div>
+  <div class="hint">Логин и пароль работают только с HTTP/HTTPS-прокси — это ограничение Chromium.</div>
+  <label class="check"><input type="checkbox" id="incognito"> Режим инкогнито: ничего не сохранять после закрытия</label>
+  <label class="check"><input type="checkbox" id="noCache"> Отключить кэш (сайты не смогут его читать)</label>
+  <label class="check"><input type="checkbox" id="block3p"> Блокировать сторонние cookies (трекеры)</label>
+  <div class="err" id="err"></div>
+  <div class="btns">
+    <button id="clear" title="Удалить cookies, кэш, историю сайтов">Очистить данные</button>
+    <button id="save">Сохранить и перезапустить</button>
+  </div>
+  <script src="settings.js"></script>
+</body>
+</html>
