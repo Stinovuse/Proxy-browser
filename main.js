@@ -228,14 +228,117 @@ async function setupSession() {
     cb({ responseHeaders: h });
   });
 
-  ses.on('will-download', (_e, item) => {
-    fs.mkdirSync(DL_DIR, { recursive: true });
-    const safeName = path.basename(item.getFilename()).replace(/[<>:"/\\|?*\x00-\x1f]/g, '_') || 'download';
-    item.setSavePath(path.join(DL_DIR, safeName));
-    item.once('done', (_ev, state) => {
-      toast(state === 'completed' ? `Загружено: ${safeName}` : `Загрузка не удалась: ${safeName}`);
-    });
+  ses.on('will-download', (_e, item) => trackDownload(item));
+}
+
+// ---------- Загрузки ----------
+const downloads = []; // новые сверху
+let dlSeq = 0;
+let dlSendTimer = null;
+
+function uniquePath(dir, name) {
+  const ext = path.extname(name);
+  const base = name.slice(0, name.length - ext.length);
+  let p = path.join(dir, name);
+  for (let i = 1; fs.existsSync(p) && i < 1000; i++) p = path.join(dir, `${base} (${i})${ext}`);
+  return p;
+}
+
+function dlPublic(d) {
+  return {
+    id: d.id, name: d.name, state: d.state, paused: d.paused,
+    received: d.received, total: d.total, speed: Math.round(d.speed),
+  };
+}
+function sendDownloads(now = false) {
+  const go = () => {
+    dlSendTimer = null;
+    if (ui && !ui.webContents.isDestroyed()) ui.webContents.send('downloads', downloads.map(dlPublic));
+  };
+  if (now) { clearTimeout(dlSendTimer); go(); }
+  else if (!dlSendTimer) dlSendTimer = setTimeout(go, 250);
+}
+
+function trackDownload(item) {
+  fs.mkdirSync(DL_DIR, { recursive: true });
+  const safeName = path.basename(item.getFilename()).replace(/[<>:"/\\|?*\x00-\x1f]/g, '_') || 'download';
+  const savePath = uniquePath(DL_DIR, safeName);
+  item.setSavePath(savePath);
+  const d = {
+    id: ++dlSeq, name: path.basename(savePath), path: savePath, item,
+    state: 'progressing', paused: false, received: 0, total: item.getTotalBytes(),
+    speed: 0, lastBytes: 0, lastTime: Date.now(),
+  };
+  downloads.unshift(d);
+  while (downloads.length > 50) downloads.pop();
+  item.on('updated', (_e, state) => {
+    const now = Date.now();
+    d.received = item.getReceivedBytes();
+    d.total = item.getTotalBytes();
+    d.paused = item.isPaused();
+    d.state = state === 'interrupted' ? 'interrupted' : 'progressing';
+    const dt = (now - d.lastTime) / 1000;
+    if (dt >= 0.5) {
+      const inst = (d.received - d.lastBytes) / dt;
+      d.speed = d.speed ? d.speed * 0.6 + inst * 0.4 : inst; // сглаживание
+      d.lastBytes = d.received; d.lastTime = now;
+    }
+    if (d.paused) d.speed = 0;
+    sendDownloads();
   });
+  item.once('done', (_e, state) => {
+    d.state = state; // completed | cancelled | interrupted
+    d.received = item.getReceivedBytes();
+    d.speed = 0;
+    d.item = null;
+    sendDownloads(true);
+    if (state === 'completed') toast(`Загружено: ${d.name}`);
+    else if (state === 'interrupted') toast(`Загрузка не удалась: ${d.name}`);
+  });
+  sendDownloads(true);
+  setDownloadsPanel(true); // как в Chrome: при начале загрузки показываем панель
+}
+
+const dlById = (id) => downloads.find(x => x.id === id);
+ipcMain.on('dl:cancel', (_e, id) => { const d = dlById(id); if (d && d.item) d.item.cancel(); });
+ipcMain.on('dl:pause', (_e, id) => {
+  const d = dlById(id);
+  if (!d || !d.item) return;
+  if (d.item.isPaused()) { if (d.item.canResume()) d.item.resume(); } else d.item.pause();
+  d.paused = d.item.isPaused();
+  sendDownloads(true);
+});
+ipcMain.on('dl:retry', (_e, id) => {
+  const d = dlById(id);
+  if (!d || !d.item) return;
+  if (d.item.canResume()) d.item.resume();
+});
+ipcMain.on('dl:open', (_e, id) => {
+  const d = dlById(id);
+  if (d && d.state === 'completed' && fs.existsSync(d.path)) shell.openPath(d.path);
+});
+ipcMain.on('dl:show', (_e, id) => {
+  const d = dlById(id);
+  if (d && fs.existsSync(d.path)) shell.showItemInFolder(d.path);
+  else { fs.mkdirSync(DL_DIR, { recursive: true }); shell.openPath(DL_DIR); }
+});
+ipcMain.on('dl:clear', () => {
+  for (let i = downloads.length - 1; i >= 0; i--) if (downloads[i].state !== 'progressing') downloads.splice(i, 1);
+  sendDownloads(true);
+});
+ipcMain.on('dl:panel', (_e, open) => setDownloadsPanel(!!open));
+
+// Панель загрузок рисуется в той же панели интерфейса: на время показа
+// она растягивается на всё окно (прозрачная) и поднимается поверх страницы
+let uiExpanded = false;
+function setDownloadsPanel(open) {
+  if (!win || win.isDestroyed() || !ui) return;
+  uiExpanded = open;
+  if (open) win.contentView.addChildView(ui); // наверх
+  layout();
+  ui.webContents.send('dl:panel', open);
+  if (open) ui.webContents.focus();
+  else { const t = activeTab(); if (t) t.view.webContents.focus(); }
 }
 
 // Упрощённое определение «сайта» (eTLD+1): example.com, example.co.uk
@@ -285,7 +388,7 @@ let nextId = 1;
 function layout() {
   if (!win) return;
   const [w, h] = win.getContentSize();
-  ui.setBounds({ x: 0, y: 0, width: w, height: TOOLBAR_H });
+  ui.setBounds({ x: 0, y: 0, width: w, height: uiExpanded ? h : TOOLBAR_H });
   for (const t of tabs) t.view.setBounds({ x: 0, y: TOOLBAR_H, width: w, height: Math.max(0, h - TOOLBAR_H) });
 }
 
@@ -405,6 +508,7 @@ function newTab(url = START_URL) {
 
   view.setVisible(false);
   win.contentView.addChildView(view);
+  if (uiExpanded) win.contentView.addChildView(ui); // панель загрузок остаётся сверху
   tabs.push(tab);
   layout();
   activate(id);
@@ -686,6 +790,7 @@ function createMainWindow() {
   ui = new WebContentsView({
     webPreferences: { preload: path.join(__dirname, 'preload.js'), contextIsolation: true, sandbox: true },
   });
+  ui.setBackgroundColor('#00000000');
   win.contentView.addChildView(ui);
   ui.webContents.loadFile(path.join(__dirname, 'ui', 'index.html'));
   ui.webContents.on('before-input-event', (e, input) => handleShortcut(e, input));

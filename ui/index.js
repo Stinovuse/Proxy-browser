@@ -134,7 +134,118 @@ $('back').onclick = () => api.send('nav:back');
 $('fwd').onclick = () => api.send('nav:fwd');
 $('reload').onclick = () => api.send(loading ? 'nav:stop' : 'nav:reload');
 $('settings').onclick = () => api.send('settings:open');
-$('dl').onclick = () => api.send('downloads:open');
+// ---------- Загрузки ----------
+const dlBtn = $('dl'), dlList = $('dllist'), dlEmpty = $('dlempty');
+const ring = dlBtn.querySelector('.ring'), ringBg = dlBtn.querySelector('.ring-bg'), badge = dlBtn.querySelector('.badge');
+const RING_LEN = 75.4;
+let dls = [];
+let panelOpen = false;
+let doneFlashTimer = null;
+
+function fmtBytes(n) {
+  if (!n || n < 0) return '0 Б';
+  const u = ['Б', 'КБ', 'МБ', 'ГБ', 'ТБ'];
+  let i = 0;
+  while (n >= 1024 && i < u.length - 1) { n /= 1024; i++; }
+  return (i === 0 ? n : n.toFixed(n < 10 ? 1 : 0)) + ' ' + u[i];
+}
+function fmtTime(sec) {
+  if (!isFinite(sec) || sec <= 0) return '';
+  if (sec < 60) return Math.ceil(sec) + ' с';
+  if (sec < 3600) return Math.floor(sec / 60) + ' мин ' + Math.round(sec % 60) + ' с';
+  return Math.floor(sec / 3600) + ' ч ' + Math.round((sec % 3600) / 60) + ' мин';
+}
+function btn(label, ch, id) {
+  const b = document.createElement('button');
+  b.textContent = label;
+  b.onclick = (e) => { e.stopPropagation(); api.send(ch, id); };
+  return b;
+}
+
+function renderDownloads() {
+  // кнопка: общий прогресс активных загрузок
+  const active = dls.filter(d => d.state === 'progressing');
+  const known = active.filter(d => d.total > 0);
+  const total = known.reduce((a, d) => a + d.total, 0);
+  const got = known.reduce((a, d) => a + d.received, 0);
+  if (active.length) {
+    clearTimeout(doneFlashTimer);
+    dlBtn.classList.remove('done');
+    const frac = total ? got / total : 0.15;
+    ring.setAttribute('opacity', '1'); ringBg.setAttribute('opacity', '1');
+    ring.setAttribute('stroke-dashoffset', String(RING_LEN * (1 - frac)));
+    badge.style.display = active.length > 1 ? '' : 'none';
+    badge.textContent = active.length;
+    dlBtn.title = 'Загрузки: ' + active.length + (total ? ' · ' + Math.floor(got / total * 100) + '%' : '');
+  } else {
+    badge.style.display = 'none';
+    dlBtn.title = 'Загрузки';
+    if (ring.getAttribute('opacity') === '1') {
+      // всё скачалось — зелёное кольцо на пару секунд
+      ring.setAttribute('stroke-dashoffset', '0');
+      dlBtn.classList.add('done');
+      clearTimeout(doneFlashTimer);
+      doneFlashTimer = setTimeout(() => {
+        ring.setAttribute('opacity', '0'); ringBg.setAttribute('opacity', '0'); dlBtn.classList.remove('done');
+      }, 2500);
+    }
+  }
+
+  // список
+  dlList.textContent = '';
+  dlEmpty.style.display = dls.length ? 'none' : '';
+  for (const d of dls) {
+    const failed = d.state === 'interrupted' || d.state === 'cancelled';
+    const el = document.createElement('div');
+    el.className = 'di ' + (d.state === 'completed' ? 'completed' : failed ? 'failed' : '') +
+      (d.paused ? ' paused' : '') + (d.state === 'progressing' && !d.total ? ' indet' : '');
+    const ext = (d.name.match(/\.([a-z0-9]{1,4})$/i) || [])[1] || 'файл';
+    const fi = document.createElement('div'); fi.className = 'fi'; fi.textContent = ext;
+    const nm = document.createElement('div'); nm.className = 'nm'; nm.textContent = d.name; nm.title = d.name;
+    el.append(fi, nm);
+    if (d.state === 'progressing') {
+      const bar = document.createElement('div'); bar.className = 'bar';
+      const i = document.createElement('i');
+      i.style.width = d.total ? (d.received / d.total * 100).toFixed(1) + '%' : '30%';
+      bar.appendChild(i); el.appendChild(bar);
+    }
+    const meta = document.createElement('div'); meta.className = 'meta';
+    const info = document.createElement('span');
+    if (d.state === 'progressing') {
+      const parts = [fmtBytes(d.received) + (d.total ? ' из ' + fmtBytes(d.total) : '')];
+      if (d.paused) parts.push('пауза');
+      else if (d.speed > 0) {
+        parts.push(fmtBytes(d.speed) + '/с');
+        if (d.total) { const left = fmtTime((d.total - d.received) / d.speed); if (left) parts.push('осталось ' + left); }
+      }
+      info.textContent = parts.join(' · ');
+      meta.append(info, btn(d.paused ? 'Продолжить' : 'Пауза', 'dl:pause', d.id), btn('Отмена', 'dl:cancel', d.id));
+    } else if (d.state === 'completed') {
+      info.textContent = 'Готово · ' + fmtBytes(d.received);
+      meta.append(info, btn('Открыть', 'dl:open', d.id), btn('В папке', 'dl:show', d.id));
+      el.ondblclick = () => api.send('dl:open', d.id);
+    } else {
+      info.textContent = d.state === 'cancelled' ? 'Отменено' : 'Ошибка загрузки';
+      meta.append(info);
+    }
+    el.appendChild(meta);
+    dlList.appendChild(el);
+  }
+}
+api.on('downloads', list => { dls = list; renderDownloads(); });
+
+function setPanel(open) {
+  panelOpen = open;
+  document.body.classList.toggle('dl-open', open);
+  dlBtn.classList.toggle('active', open);
+}
+api.on('dl:panel', open => setPanel(open));
+dlBtn.onclick = () => api.send('dl:panel', !panelOpen);
+$('overlay').onmousedown = () => api.send('dl:panel', false);
+$('dlfolder').onclick = () => api.send('downloads:open');
+$('dlclear').onclick = () => api.send('dl:clear');
+document.addEventListener('keydown', e => { if (e.key === 'Escape' && panelOpen) api.send('dl:panel', false); });
+renderDownloads();
 ipEl.onclick = () => api.send('ip:check');
 addr.addEventListener('keydown', e => {
   if (e.key === 'Enter') { api.send('nav:go', addr.value); addr.blur(); }

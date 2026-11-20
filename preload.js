@@ -3,9 +3,10 @@ const { contextBridge, ipcRenderer } = require('electron');
 
 const SEND = ['tab:new', 'tab:close', 'tab:switch', 'nav:go', 'nav:back', 'nav:fwd',
   'nav:reload', 'nav:stop', 'ip:check', 'settings:open', 'downloads:open',
-  'bm:toggle', 'bm:open', 'bm:rename', 'bm:menu', 'tr:toggle', 'update:install'];
+  'bm:toggle', 'bm:open', 'bm:rename', 'bm:menu', 'tr:toggle', 'update:install',
+  'dl:cancel', 'dl:pause', 'dl:retry', 'dl:open', 'dl:show', 'dl:clear', 'dl:panel'];
 const INVOKE = ['settings:get', 'settings:save', 'data:clear'];
-const ON = ['tabs', 'proxy', 'toast', 'focus-address', 'bookmarks', 'bm:rename-start', 'update'];
+const ON = ['tabs', 'proxy', 'toast', 'focus-address', 'bookmarks', 'bm:rename-start', 'update', 'downloads', 'dl:panel'];
 
 contextBridge.exposeInMainWorld('api', {
   send: (ch, ...a) => { if (SEND.includes(ch)) ipcRenderer.send(ch, ...a); },
