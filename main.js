@@ -96,7 +96,11 @@ if (!app.requestSingleInstanceLock()) { app.quit(); }
 
 // Непредвиденные ошибки не роняют браузер, а пишутся в журнал
 const LOG_PATH = path.join(DATA_DIR, 'error.log');
+// Тест запуска в CI: «S Browser.exe --smoke-test» стартует, ждёт и выходит с кодом 0/1
+const SMOKE = process.argv.includes('--smoke-test');
+const smokeErrors = [];
 function logError(kind, err) {
+  if (SMOKE) smokeErrors.push(`${kind}: ${(err && err.stack) || err}`);
   try {
     const line = `[${new Date().toISOString()}] ${kind}: ${(err && err.stack) || err}\n`;
     fs.appendFileSync(LOG_PATH, line);
@@ -372,10 +376,12 @@ function newTab(url = START_URL) {
 
   wc.setWindowOpenHandler(openHandler);
   wc.on('did-create-window', setupPopup);
-  wc.on('will-navigate', (e, u) => { if (!/^(https?|data|about):/i.test(u)) e.preventDefault(); });
-  wc.on('did-start-navigation', (_e, _u, inPage, isMain) => {
+  wc.on('will-navigate', (e, u) => { if (!/^(https?|data|about):/i.test(e.url || u || '')) e.preventDefault(); });
+  wc.on('did-start-navigation', (e, _u, inPage, isMainArg) => {
+    const isMain = e.isMainFrame !== undefined ? e.isMainFrame : isMainArg;
+    const sameDoc = e.isSameDocument !== undefined ? e.isSameDocument : inPage;
     if (isMain) tab.errorUrl = null;
-    if (isMain && !inPage) tab.tr = null;
+    if (isMain && !sameDoc) tab.tr = null;
   });
   wc.on('did-fail-load', (_e, code, desc, u, isMain) => {
     if (!isMain || code === -3) return; // -3 = ABORTED
@@ -546,7 +552,7 @@ function setupPopup(popup) {
   setupTimezone(pwc);
   pwc.setWindowOpenHandler(openHandler);
   pwc.on('did-create-window', setupPopup);
-  pwc.on('will-navigate', (e, u) => { if (!/^(https?|about):/i.test(u)) e.preventDefault(); });
+  pwc.on('will-navigate', (e, u) => { if (!/^(https?|about):/i.test(e.url || u || '')) e.preventDefault(); });
   // В заголовке всегда виден реальный адрес — защита от поддельных окон входа
   const updateTitle = () => {
     if (popup.isDestroyed()) return;
@@ -905,6 +911,21 @@ app.whenReady().then(async () => {
   await setupSession();
   createMainWindow();
   setupUpdater();
+  if (SMOKE) {
+    setTimeout(() => {
+      const res = {
+        ok: smokeErrors.length === 0 && !!win && tabs.length > 0 && !ui.webContents.isDestroyed(),
+        tabs: tabs.length,
+        electron: process.versions.electron,
+        chrome: process.versions.chrome,
+        userAgent: ses.getUserAgent(),
+        timezone: TIMEZONE,
+        errors: smokeErrors,
+      };
+      try { fs.writeFileSync(path.join(DATA_DIR, 'smoke.json'), JSON.stringify(res, null, 2)); } catch {}
+      app.exit(res.ok ? 0 : 1);
+    }, 12000);
+  }
 });
 
 app.on('web-contents-created', (_e, wc) => {

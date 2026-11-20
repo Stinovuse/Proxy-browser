@@ -44,6 +44,19 @@ jobs:
           grep -qi "tab-preload.js" asar.txt
           echo "OK: updater and tab preload are inside the app"
 
+      - name: Smoke test (launch the app on Windows)
+        shell: pwsh
+        run: |
+          $d = Join-Path $env:APPDATA 'SBrowser'
+          New-Item -ItemType Directory -Force $d | Out-Null
+          '{"type":"http","host":"127.0.0.1","port":9,"user":"","incognito":true,"tzV2":true}' | Set-Content (Join-Path $d 'config.json')
+          $p = Start-Process -FilePath 'dist\win-unpacked\S Browser.exe' -ArgumentList '--smoke-test' -PassThru
+          if (-not $p.WaitForExit(90000)) { Stop-Process -Id $p.Id -Force; Write-Error 'App did not exit in time'; exit 1 }
+          Write-Host "Exit code: $($p.ExitCode)"
+          if (Test-Path (Join-Path $d 'smoke.json')) { Get-Content (Join-Path $d 'smoke.json') }
+          if (Test-Path (Join-Path $d 'error.log')) { Write-Host '--- error.log ---'; Get-Content (Join-Path $d 'error.log') }
+          if ($p.ExitCode -ne 0) { exit 1 }
+
       - name: Upload installer (artifact)
         uses: actions/upload-artifact@v4
         with:
