@@ -10,7 +10,9 @@
  *  - localhost и локальная сеть тоже идут через прокси (<-loopback>);
  *  - данные браузера в отдельной папке, file:// заблокирован,
  *    доступ к камере/микрофону/геолокации/USB и т.п. запрещён;
- *  - загрузки сохраняются только в собственную папку приложения.
+ *  - загрузки сохраняются только в собственную папку приложения;
+ *  - часовой пояс подменяется (по умолчанию UTC+8);
+ *  - автоперевод страниц и автообновление — тоже только через прокси.
  */
 const {
   app, BaseWindow, BrowserWindow, WebContentsView, Menu,
@@ -39,6 +41,24 @@ function readCfg() {
 const cfg = readCfg();
 const configured = !!(cfg && cfg.host && cfg.port && PROXY_TYPES.includes(cfg.type));
 const proxyUrl = configured ? `${cfg.type}://${cfg.host}:${cfg.port}` : null;
+
+// ---------- Часовой пояс ----------
+const TZ_DEFAULT = 'Asia/Shanghai'; // UTC+8
+const TZ_RE = /^(UTC|[A-Za-z]+(\/[A-Za-z0-9_+-]+)+)$/;
+const TIMEZONE = (cfg && cfg.timezone === 'system') ? 'system'
+  : (cfg && TZ_RE.test(cfg.timezone || '')) ? cfg.timezone : TZ_DEFAULT;
+if (TIMEZONE !== 'system') process.env.TZ = TIMEZONE; // для процессов Chromium (воркеры и т.п.)
+
+// ---------- Перевод ----------
+const TR_LANGS = ['ru', 'en', 'uk', 'zh-CN', 'de', 'fr', 'es', 'it', 'pt', 'ja', 'ko', 'tr', 'ar'];
+const TR_AUTO = !cfg || cfg.autoTranslate !== false;
+const TR_LANG = (cfg && TR_LANGS.includes(cfg.translateTo)) ? cfg.translateTo : 'ru';
+const TR_EXCL_PATH = path.join(DATA_DIR, 'translate-exclude.json');
+const TR_URL = 'https://translate.googleapis.com/translate_a/single';
+
+// ---------- Автообновление ----------
+let autoUpdater = null;
+try { ({ autoUpdater } = require('electron-updater')); } catch { /* в режиме разработки может отсутствовать */ }
 
 // ---------- Флаги Chromium (до app.ready) ----------
 if (configured) {
@@ -199,6 +219,7 @@ function tabState() {
       loading: wc.isLoading(),
       active: t.id === activeId,
       bookmarked: bookmarks.some(b => b.url === wc.getURL()),
+      translated: !!(t.tr && t.tr.active),
       canBack: nh ? nh.canGoBack() : wc.canGoBack(),
       canFwd: nh ? nh.canGoForward() : wc.canGoForward(),
     };
@@ -238,19 +259,24 @@ function newTab(url = START_URL) {
       webSecurity: true,
       spellcheck: false,
       safeDialogs: true,
+      preload: path.join(__dirname, 'tab-preload.js'),
     },
   });
   const id = nextId++;
-  const tab = { id, view, errorUrl: null };
+  const tab = { id, view, errorUrl: null, tr: null };
   const wc = view.webContents;
   wc.setWebRTCIPHandlingPolicy('disable_non_proxied_udp');
+  setupTimezone(wc);
 
   wc.setWindowOpenHandler(({ url: u }) => {
     if (/^https?:/i.test(u)) newTab(u);
     return { action: 'deny' };
   });
   wc.on('will-navigate', (e, u) => { if (!/^(https?|data|about):/i.test(u)) e.preventDefault(); });
-  wc.on('did-start-navigation', (_e, _u, _inPage, isMain) => { if (isMain) tab.errorUrl = null; });
+  wc.on('did-start-navigation', (_e, _u, inPage, isMain) => {
+    if (isMain) tab.errorUrl = null;
+    if (isMain && !inPage) tab.tr = null;
+  });
   wc.on('did-fail-load', (_e, code, desc, u, isMain) => {
     if (!isMain || code === -3) return; // -3 = ABORTED
     tab.errorUrl = u;
@@ -269,6 +295,50 @@ function newTab(url = START_URL) {
   activate(id);
   wc.loadURL(url).catch(() => {});
 }
+
+// Подмена часового пояса через DevTools-протокол: страница, iframe-ы
+// из других процессов и воркеры видят TIMEZONE вместо системного.
+function setupTimezone(wc) {
+  if (TIMEZONE === 'system') return;
+  const dbg = wc.debugger;
+  const send = (m, p, sid) => dbg.sendCommand(m, p || {}, sid).catch(() => {});
+  const apply = (sid) => Promise.allSettled([
+    send('Emulation.setTimezoneOverride', { timezoneId: TIMEZONE }, sid),
+    send('Target.setAutoAttach', { autoAttach: true, waitForDebuggerOnStart: true, flatten: true }, sid),
+  ]).then(() => { if (sid) send('Runtime.runIfWaitingForDebugger', {}, sid); });
+  try { dbg.attach('1.3'); } catch { return; }
+  dbg.on('message', (_e, method, params) => {
+    if (method === 'Target.attachedToTarget' && params && params.sessionId) apply(params.sessionId);
+  });
+  apply(undefined);
+}
+
+// ---------- Перевод (запросы идут через прокси) ----------
+let trExclude = new Set();
+try { trExclude = new Set(JSON.parse(fs.readFileSync(TR_EXCL_PATH, 'utf8'))); } catch {}
+function saveTrExclude() {
+  try { fs.writeFileSync(TR_EXCL_PATH, JSON.stringify([...trExclude], null, 2)); } catch {}
+}
+const trCache = new Map();
+function trCacheSet(k, v) {
+  if (trCache.size > 20000) trCache.delete(trCache.keys().next().value);
+  trCache.set(k, v);
+}
+async function gtranslate(text, tl) {
+  const base = `${TR_URL}?client=gtx&sl=auto&tl=${encodeURIComponent(tl)}&dt=t`;
+  const q = encodeURIComponent(text);
+  const r = q.length < 6000
+    ? await ses.fetch(`${base}&q=${q}`)
+    : await ses.fetch(base, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded;charset=UTF-8' },
+      body: 'q=' + q,
+    });
+  if (!r.ok) throw new Error('HTTP ' + r.status);
+  const j = await r.json();
+  return { text: (j[0] || []).map(x => (x && x[0]) || '').join(''), lang: j[2] || null };
+}
+function tabBySender(sender) { return tabs.find(t => t.view.webContents === sender); }
 
 function activate(id) {
   activeId = id;
@@ -309,6 +379,7 @@ function handleShortcut(e, input) {
   else if (input.alt && k === 'arrowleft') { t?.view.webContents.navigationHistory?.goBack(); e.preventDefault(); }
   else if (input.alt && k === 'arrowright') { t?.view.webContents.navigationHistory?.goForward(); e.preventDefault(); }
   else if (mod && k === 'd') { ipcMain.emit('bm:toggle'); e.preventDefault(); }
+  else if (mod && input.shift && k === 'y') { ipcMain.emit('tr:toggle'); e.preventDefault(); }
   else if (k === 'f12') { t?.view.webContents.toggleDevTools(); e.preventDefault(); }
 }
 
@@ -350,7 +421,7 @@ let settingsWin = null;
 function openSettings() {
   if (settingsWin) return settingsWin.focus();
   settingsWin = new BrowserWindow({
-    width: 480, height: 680, resizable: false, title: 'Настройки прокси',
+    width: 500, height: 820, resizable: true, title: 'Настройки',
     autoHideMenuBar: true, backgroundColor: '#1e1f22',
     icon: path.join(__dirname, 'ui', 'icon.png'),
     webPreferences: { preload: path.join(__dirname, 'preload.js'), contextIsolation: true, sandbox: true },
@@ -423,12 +494,94 @@ ipcMain.on('bm:menu', (_e, index) => {
   ]).popup({ window: win });
 });
 
+// ---------- Перевод: IPC ----------
+ipcMain.handle('tr:config', (e, host) => {
+  if (!tabBySender(e.sender)) return null;
+  return { auto: TR_AUTO, target: TR_LANG, excluded: trExclude.has(String(host || '')) };
+});
+ipcMain.handle('tr:translate', async (e, texts, target) => {
+  if (!tabBySender(e.sender) || !ses) return { ok: false };
+  if (!Array.isArray(texts) || texts.length > 100) return { ok: false };
+  const tl = TR_LANGS.includes(target) ? target : TR_LANG;
+  const items = texts.map(s => String(s).replace(/\s+/g, ' ').trim().slice(0, 2000));
+  const out = new Array(items.length).fill('');
+  const need = [];
+  items.forEach((s, i) => {
+    const c = trCache.get(tl + '\u0000' + s);
+    if (c !== undefined) out[i] = c; else if (s) need.push(i);
+  });
+  let lang = null;
+  if (need.length) {
+    try {
+      const r = await gtranslate(need.map(i => items[i]).join('\n'), tl);
+      lang = r.lang;
+      let parts = r.text.split('\n');
+      if (parts.length !== need.length) {
+        // Google склеил/разбил строки — переводим по одной
+        parts = [];
+        for (const i of need) parts.push((await gtranslate(items[i], tl)).text);
+      }
+      need.forEach((i, k) => {
+        out[i] = (parts[k] || '').trim();
+        trCacheSet(tl + '\u0000' + items[i], out[i]);
+      });
+    } catch {
+      return { ok: false };
+    }
+  }
+  return { ok: true, out, lang };
+});
+ipcMain.on('tr:state', (e, st) => {
+  const t = tabBySender(e.sender);
+  if (!t) return;
+  t.tr = { active: !!(st && st.active), lang: st && typeof st.lang === 'string' ? st.lang : null };
+  sendTabs();
+});
+ipcMain.on('tr:toggle', () => {
+  const t = activeTab();
+  if (!t) return;
+  const wc = t.view.webContents;
+  let host = '';
+  try { host = new URL(wc.getURL()).hostname; } catch {}
+  if (!host) return;
+  const on = !(t.tr && t.tr.active);
+  // Выключили перевод на сайте — больше не переводим его автоматически, и наоборот
+  if (on) trExclude.delete(host); else if (TR_AUTO) trExclude.add(host);
+  saveTrExclude();
+  wc.send('tr:set', on);
+});
+
+// ---------- Автообновление ----------
+let updateReady = null;
+function setupUpdater() {
+  if (!autoUpdater || !app.isPackaged || !configured) return;
+  // Проверка обновлений тоже идёт только через прокси
+  session.fromPartition('electron-updater', { cache: false })
+    .setProxy({ proxyRules: proxyUrl, proxyBypassRules: '<-loopback>' }).catch(() => {});
+  autoUpdater.logger = null;
+  autoUpdater.autoDownload = true;
+  autoUpdater.autoInstallOnAppQuit = true;
+  autoUpdater.on('update-downloaded', (info) => {
+    updateReady = info.version;
+    if (ui && !ui.webContents.isDestroyed()) ui.webContents.send('update', { version: info.version });
+  });
+  autoUpdater.on('error', () => {});
+  const check = () => { autoUpdater.checkForUpdates().catch(() => {}); };
+  setTimeout(check, 15_000);
+  setInterval(check, 3 * 60 * 60 * 1000);
+}
+ipcMain.on('update:install', () => {
+  if (updateReady && autoUpdater) autoUpdater.quitAndInstall(true, true);
+});
+
 ipcMain.handle('settings:get', () => {
   const c = cfg || {};
   return {
     type: c.type || 'socks5', host: c.host || '', port: c.port || '',
     user: c.user || '', hasPass: !!c.pass, incognito: !!c.incognito,
     noCache: c.noCache !== false, block3p: c.block3p !== false,
+    timezone: TIMEZONE, autoTranslate: TR_AUTO, translateTo: TR_LANG,
+    version: app.getVersion(),
     configured,
   };
 });
@@ -446,6 +599,9 @@ ipcMain.handle('settings:save', (_e, data) => {
   const next = {
     type, host, port, user, incognito: !!data.incognito,
     noCache: data.noCache !== false, block3p: data.block3p !== false,
+    timezone: (data.timezone === 'system' || TZ_RE.test(data.timezone || '')) ? data.timezone : TZ_DEFAULT,
+    autoTranslate: data.autoTranslate !== false,
+    translateTo: TR_LANGS.includes(data.translateTo) ? data.translateTo : 'ru',
   };
   if (data.pass) next.pass = encryptPass(data.pass);
   else if (cfg && cfg.pass && user) next.pass = cfg.pass;
@@ -470,6 +626,7 @@ app.whenReady().then(async () => {
   if (!configured) return openSettings();
   await setupSession();
   createMainWindow();
+  setupUpdater();
 });
 
 app.on('web-contents-created', (_e, wc) => {

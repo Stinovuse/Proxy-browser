@@ -25,6 +25,9 @@ function render() {
     $('back').disabled = !a.canBack;
     $('fwd').disabled = !a.canFwd;
     loading = a.loading;
+    const tr = $('tr');
+    tr.classList.toggle('on', !!a.translated);
+    tr.title = a.translated ? 'Показать оригинал (Ctrl+Shift+Y)' : 'Перевести страницу (Ctrl+Shift+Y)';
     const star = $('star');
     star.textContent = a.bookmarked ? '★' : '☆';
     star.classList.toggle('on', a.bookmarked);
@@ -94,6 +97,13 @@ api.on('bm:rename-start', i => {
   input.onblur = () => finish(true);
 });
 $('star').onclick = () => api.send('bm:toggle');
+$('tr').onclick = () => api.send('tr:toggle');
+api.on('update', u => {
+  const b = $('upd');
+  b.textContent = '⬆ Обновить до ' + u.version;
+  b.style.display = '';
+});
+$('upd').onclick = () => api.send('update:install');
 
 $('newtab').onclick = () => api.send('tab:new');
 $('back').onclick = () => api.send('nav:back');
