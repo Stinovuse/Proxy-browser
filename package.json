@@ -53,13 +53,14 @@
       "installerSidebar": "build/installerSidebar.bmp",
       "uninstallerSidebar": "build/uninstallerSidebar.bmp",
       "installerHeader": "build/installerHeader.bmp",
-      "language": "1049",
       "installerLanguages": [
         "ru_RU"
       ],
-      "multiLanguageInstaller": false,
+      "multiLanguageInstaller": true,
       "runAfterFinish": true,
-      "menuCategory": false
+      "menuCategory": false,
+      "displayLanguageSelector": false,
+      "removeDefaultUninstallWelcomePage": true
     },
     "publish": [
       {
