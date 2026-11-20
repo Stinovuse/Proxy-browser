@@ -48,7 +48,18 @@
       "installerIcon": "build/icon.ico",
       "uninstallerIcon": "build/icon.ico",
       "deleteAppDataOnUninstall": false,
-      "artifactName": "SBrowser-Setup-${version}.${ext}"
+      "artifactName": "SBrowser-Setup-${version}.${ext}",
+      "include": "build/installer.nsh",
+      "installerSidebar": "build/installerSidebar.bmp",
+      "uninstallerSidebar": "build/uninstallerSidebar.bmp",
+      "installerHeader": "build/installerHeader.bmp",
+      "language": "1049",
+      "installerLanguages": [
+        "ru_RU"
+      ],
+      "multiLanguageInstaller": false,
+      "runAfterFinish": true,
+      "menuCategory": false
     },
     "publish": [
       {

@@ -61,6 +61,21 @@ jobs:
           if (Test-Path (Join-Path $d 'error.log')) { Write-Host '--- error.log ---'; Get-Content (Join-Path $d 'error.log') }
           if ($p.ExitCode -ne 0) { exit 1 }
 
+      - name: Installer screenshots (design check)
+        continue-on-error: true
+        timeout-minutes: 4
+        shell: pwsh
+        run: ./tools/installer-screens.ps1 -Out installer-screens
+
+      - name: Upload installer screenshots
+        if: always()
+        continue-on-error: true
+        uses: actions/upload-artifact@v4
+        with:
+          name: installer-screens
+          path: installer-screens/*.png
+          retention-days: 7
+
       - name: Upload installer (artifact)
         uses: actions/upload-artifact@v4
         with:
