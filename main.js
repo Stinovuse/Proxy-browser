@@ -169,6 +169,15 @@ async function proxyJson(url, opts) {
   return JSON.parse(r.text);
 }
 
+// User-Agent как у обычного Chrome: без названия приложения и «Electron»,
+// версия в сокращённом виде (Chrome/156.0.0.0), как отправляет настоящий Chrome
+function chromeLikeUA(ua) {
+  const m = ua.match(/Chrome\/(\d+)/);
+  const major = m ? m[1] : process.versions.chrome.split('.')[0];
+  const platform = (ua.match(/^Mozilla\/5\.0 \(([^)]+)\)/) || [])[1] || 'Windows NT 10.0; Win64; x64';
+  return `Mozilla/5.0 (${platform}) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/${major}.0.0.0 Safari/537.36`;
+}
+
 // ---------- Сессия ----------
 let ses;
 async function setupSession() {
@@ -177,9 +186,7 @@ async function setupSession() {
   await ses.forceReloadProxyConfig?.();
 
   // Убираем "Electron" из User-Agent, чтобы выглядеть как обычный Chrome
-  ses.setUserAgent(ses.getUserAgent()
-    .replace(/\s(Electron|proxy-browser|s-browser)\/\S+/gi, '')
-    .replace(/\s(S Browser|Proxy Browser)\/\S+/g, ''));
+  ses.setUserAgent(chromeLikeUA(ses.getUserAgent()));
 
   const allowed = new Set(['fullscreen', 'clipboard-sanitized-write']);
   ses.setPermissionRequestHandler((_wc, perm, cb) => cb(allowed.has(perm)));
@@ -914,7 +921,8 @@ app.whenReady().then(async () => {
   if (SMOKE) {
     setTimeout(() => {
       const res = {
-        ok: smokeErrors.length === 0 && !!win && tabs.length > 0 && !ui.webContents.isDestroyed(),
+        ok: smokeErrors.length === 0 && !!win && tabs.length > 0 && !ui.webContents.isDestroyed()
+          && !/Electron|SBrowser|S Browser|s-browser/i.test(ses.getUserAgent()),
         tabs: tabs.length,
         electron: process.versions.electron,
         chrome: process.versions.chrome,
