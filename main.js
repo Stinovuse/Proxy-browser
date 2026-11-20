@@ -239,11 +239,23 @@ function siteOf(url) {
     return p.slice(-n).join('.');
   } catch { return null; }
 }
+// Сервисы входа («Войти через Google/Apple/…»): им сторонние cookies нужны,
+// иначе вход на сайтах ломается. Рекламные и счётчики по-прежнему блокируются.
+const SSO_SITES = new Set([
+  'google.com', 'googleapis.com', 'gstatic.com', 'firebaseapp.com', 'web.app', 'firebase.com',
+  'apple.com', 'icloud.com', 'microsoftonline.com', 'live.com', 'microsoft.com', 'msauth.net', 'msftauth.net',
+  'facebook.com', 'github.com', 'x.com', 'twitter.com', 'discord.com', 'telegram.org',
+  'yandex.ru', 'yandex.com', 'vk.com', 'mail.ru', 'auth0.com', 'okta.com', 'clerk.com', 'clerk.dev',
+  'stytch.com', 'cloudflare.com', 'hcaptcha.com', 'recaptcha.net', 'challenges.cloudflare.com',
+]);
 function isThirdParty(d) {
   if (d.resourceType === 'mainFrame' || !d.webContents) return false;
-  const top = siteOf(d.webContents.getURL());
+  let top;
+  try { top = siteOf(d.webContents.getURL()); } catch { return false; }
   const req = siteOf(d.url);
-  return !!(top && req && top !== req);
+  if (!top || !req || top === req) return false;
+  if (SSO_SITES.has(req)) return false;
+  return true;
 }
 
 // Сессия интерфейса — никакой сети вообще
@@ -358,10 +370,8 @@ function newTab(url = START_URL) {
     wc.loadURL(errorPage(d.reason, 'Вкладка аварийно завершилась. Нажмите «Обновить» (Ctrl+R).', u)).catch(() => {});
   });
 
-  wc.setWindowOpenHandler(({ url: u }) => {
-    if (/^https?:/i.test(u)) newTab(u);
-    return { action: 'deny' };
-  });
+  wc.setWindowOpenHandler(openHandler);
+  wc.on('did-create-window', setupPopup);
   wc.on('will-navigate', (e, u) => { if (!/^(https?|data|about):/i.test(u)) e.preventDefault(); });
   wc.on('did-start-navigation', (_e, _u, inPage, isMain) => {
     if (isMain) tab.errorUrl = null;
@@ -428,6 +438,53 @@ async function gtranslate(text, tl) {
   return { text: (j[0] || []).map(x => (x && x[0]) || '').join(''), lang: j[2] || null };
 }
 function tabBySender(sender) { return tabs.find(t => t.view.webContents === sender); }
+
+// ---------- Всплывающие окна (вход через Google и т.п.) ----------
+// window.open с размерами — это окно входа: открываем его как настоящее окно,
+// чтобы сайт получил ответ (window.opener / postMessage). Обычные ссылки
+// target=_blank открываются новой вкладкой.
+function openHandler({ url: u, disposition, features }) {
+  if (!/^(https?:|about:blank)/i.test(u)) return { action: 'deny' };
+  const isPopup = disposition === 'new-window' || /(width|height|popup)/i.test(features || '');
+  if (isPopup) {
+    return {
+      action: 'allow',
+      overrideBrowserWindowOptions: {
+        width: 520, height: 720, minWidth: 320, minHeight: 300,
+        autoHideMenuBar: true, backgroundColor: '#ffffff', title: APP_NAME,
+        icon: path.join(__dirname, 'ui', 'icon.png'),
+        webPreferences: {
+          session: ses, contextIsolation: true, sandbox: true, nodeIntegration: false,
+          webSecurity: true, spellcheck: false, safeDialogs: true,
+        },
+      },
+    };
+  }
+  if (/^https?:/i.test(u)) newTab(u);
+  return { action: 'deny' };
+}
+
+function setupPopup(popup) {
+  const pwc = popup.webContents;
+  popup.setMenu(null);
+  pwc.setWebRTCIPHandlingPolicy('disable_non_proxied_udp');
+  setupTimezone(pwc);
+  pwc.setWindowOpenHandler(openHandler);
+  pwc.on('did-create-window', setupPopup);
+  pwc.on('will-navigate', (e, u) => { if (!/^(https?|about):/i.test(u)) e.preventDefault(); });
+  // В заголовке всегда виден реальный адрес — защита от поддельных окон входа
+  const updateTitle = () => {
+    if (popup.isDestroyed()) return;
+    let host = '';
+    try { host = new URL(pwc.getURL()).hostname; } catch {}
+    popup.setTitle((host ? host + ' — ' : '') + (pwc.getTitle() || APP_NAME));
+  };
+  pwc.on('page-title-updated', (e) => { e.preventDefault(); updateTitle(); });
+  pwc.on('did-navigate', updateTitle);
+  pwc.on('before-input-event', (e, input) => {
+    if (input.type === 'keyDown' && input.key === 'F12') { pwc.toggleDevTools(); e.preventDefault(); }
+  });
+}
 
 function activate(id) {
   activeId = id;
