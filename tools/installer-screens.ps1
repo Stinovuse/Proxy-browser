@@ -62,6 +62,11 @@ $un = Join-Path $env:LOCALAPPDATA 'Programs\S Browser\Uninstall S Browser.exe'
 if (Test-Path $un) {
   Start-Process -FilePath $un | Out-Null
   $uw = FindWin { $_.MainWindowTitle -like '*S Browser*' -and $_.ProcessName -ne 'S Browser' -and $_.ProcessName -notlike 'SBrowser-Setup*' }
-  if ($uw) { Start-Sleep -Seconds 1; Cap $uw.MainWindowHandle '6-uninstall'; Cancel $uw.MainWindowHandle }
+  if ($uw) {
+    Start-Sleep -Seconds 1; Cap $uw.MainWindowHandle '6-uninstall-welcome'
+    Next $uw.MainWindowHandle; Start-Sleep -Seconds 2; Cap $uw.MainWindowHandle '7-uninstall-next'
+    Next $uw.MainWindowHandle; Start-Sleep -Seconds 12; Cap $uw.MainWindowHandle '8-uninstall-finish'
+    Next $uw.MainWindowHandle
+  }
 } else { Write-Host "uninstaller not found: $un" }
 Get-Process | Where-Object { $_.ProcessName -eq 'S Browser' } | Stop-Process -Force -ErrorAction SilentlyContinue

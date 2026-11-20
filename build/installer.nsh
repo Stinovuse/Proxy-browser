@@ -21,7 +21,7 @@
   !insertmacro SB_THEME
   ; финальная страница (её вставит сборщик позже — значения уже будут заданы)
   !insertmacro SB_SET MUI_FINISHPAGE_TITLE "S Browser установлен"
-  !insertmacro SB_SET MUI_FINISHPAGE_TEXT "Всё готово!$\r$\n$\r$\nПри первом запуске откроются настройки — укажите адрес, порт и, если нужно, логин и пароль вашего прокси.$\r$\n$\r$\nБраузер выходит в интернет только через прокси: если он недоступен, страницы не загрузятся."
+  !insertmacro SB_SET MUI_FINISHPAGE_TEXT "Всё готово!$\r$\n$\r$\nПри первом запуске откроются настройки: укажите адрес и порт вашего прокси."
   !insertmacro SB_SET MUI_FINISHPAGE_RUN_TEXT "Запустить S Browser"
 
   !define MUI_WELCOMEPAGE_TITLE "Добро пожаловать в S Browser"
@@ -34,4 +34,28 @@
   !define MUI_WELCOMEPAGE_TITLE "Удаление S Browser"
   !define MUI_WELCOMEPAGE_TEXT "Мастер удалит S Browser с этого компьютера.$\r$\n$\r$\nВаши настройки прокси, закладки и загрузки останутся в папке %APPDATA%\SBrowser — удалите её вручную, если они больше не нужны.$\r$\n$\r$\nНажмите «Далее», чтобы продолжить."
   !insertmacro MUI_UNPAGE_WELCOME
+!macroend
+
+; Финальная страница: как в шаблоне electron-builder (запуск через $launchLink от имени
+; пользователя), плюс светлая подпись у галочки «Запустить» на тёмном фоне
+!macro customFinishPage
+  Function SBStartApp
+    ${if} ${isUpdated}
+      StrCpy $1 "--updated"
+    ${else}
+      StrCpy $1 ""
+    ${endif}
+    ${StdUtils.ExecShellAsUser} $0 "$launchLink" "open" "$1"
+  FunctionEnd
+
+  Function SBFinishShow
+    ; у «темизированной» галочки Windows игнорирует цвет текста — снимаем тему с этого элемента
+    System::Call 'uxtheme::SetWindowTheme(p $mui.FinishPage.Run, w " ", w " ")'
+    SetCtlColors $mui.FinishPage.Run "E9ECF5" "0B0D14"
+  FunctionEnd
+
+  !define MUI_FINISHPAGE_RUN
+  !define MUI_FINISHPAGE_RUN_FUNCTION "SBStartApp"
+  !define MUI_PAGE_CUSTOMFUNCTION_SHOW SBFinishShow
+  !insertmacro MUI_PAGE_FINISH
 !macroend

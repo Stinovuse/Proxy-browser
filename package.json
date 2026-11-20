@@ -59,8 +59,7 @@
       "multiLanguageInstaller": true,
       "runAfterFinish": true,
       "menuCategory": false,
-      "displayLanguageSelector": false,
-      "removeDefaultUninstallWelcomePage": true
+      "displayLanguageSelector": false
     },
     "publish": [
       {
