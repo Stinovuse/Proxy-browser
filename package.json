@@ -1,9 +1,9 @@
 {
-  "name": "proxy-browser",
-  "productName": "Proxy Browser",
-  "version": "1.3.0",
-  "description": "Изолированный браузер на Chromium, работающий только через прокси",
-  "author": "Proxy Browser",
+  "name": "s-browser",
+  "productName": "S Browser",
+  "version": "1.4.0",
+  "description": "S Browser — изолированный браузер на Chromium, работающий только через прокси",
+  "author": "S Browser",
   "repository": {
     "type": "git",
     "url": "https://github.com/Stinovuse/Proxy-browser.git"
@@ -22,7 +22,7 @@
   },
   "build": {
     "appId": "local.proxybrowser",
-    "productName": "Proxy Browser",
+    "productName": "S Browser",
     "directories": {
       "buildResources": "build",
       "output": "dist"
@@ -43,11 +43,11 @@
       "allowToChangeInstallationDirectory": true,
       "createDesktopShortcut": true,
       "createStartMenuShortcut": true,
-      "shortcutName": "Proxy Browser",
+      "shortcutName": "S Browser",
       "installerIcon": "build/icon.ico",
       "uninstallerIcon": "build/icon.ico",
       "deleteAppDataOnUninstall": false,
-      "artifactName": "ProxyBrowser-Setup-${version}.${ext}"
+      "artifactName": "SBrowser-Setup-${version}.${ext}"
     },
     "publish": [
       {

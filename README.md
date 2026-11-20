@@ -1,11 +1,11 @@
-# Proxy Browser
+# S Browser
 
 Изолированный браузер на Chromium (Electron). В интернет выходит **только через ваш прокси**.
 
 ## Скачать готовый установщик
 
 Установщик собирается автоматически через GitHub Actions:
-- **Releases** (справа на главной странице репозитория) — стабильные версии `Proxy Browser Setup X.Y.Z.exe`;
+- **Releases** (справа на главной странице репозитория) — стабильные версии `SBrowser-Setup-X.Y.Z.exe`;
 - **Actions → последняя сборка → Artifacts** — сборка после каждого изменения.
 
 ## Запуск из исходников
@@ -13,7 +13,7 @@
 Нужен Node.js 18+ (https://nodejs.org).
 
 ```bash
-cd proxy-browser
+cd Proxy-browser
 npm install
 npm start
 ```
@@ -42,7 +42,7 @@ npm run dist
 | Электрон в User-Agent | Удалён, сайты видят обычный Chrome |
 | Чтение кэша, ETag-«суперкуки» | Кэш на диск не пишется (`no-store`), заголовки ETag/Last-Modified вырезаются, при запуске очищаются кэш, CacheStorage и service workers |
 | Закладки | Хранятся локально в `bookmarks.json`, сайтам недоступны |
-| Часовой пояс системы | Подменяется (по умолчанию Asia/Shanghai, UTC+8) для страниц, iframe-ов и воркеров |
+| Часовой пояс системы | Подменяется (по умолчанию Asia/Singapore, UTC+8) для страниц, iframe-ов и воркеров |
 | Трекеры через сторонние cookies | Cookies не уходят на чужие домены и не принимаются от них |
 
 В правом верхнем углу показан внешний IP. Зелёный значок означает, что прокси работает, красный — что прокси недоступен и соединение заблокировано.
@@ -57,9 +57,9 @@ npm run dist
 
 ## Где хранятся данные
 
-- Windows: `%APPDATA%\ProxyBrowser`
-- macOS: `~/Library/Application Support/ProxyBrowser`
-- Linux: `~/.config/ProxyBrowser`
+- Windows: `%APPDATA%\SBrowser`
+- macOS: `~/Library/Application Support/SBrowser`
+- Linux: `~/.config/SBrowser`
 
 `config.json` содержит настройки прокси. Пароль шифруется средствами ОС: DPAPI на Windows, Keychain на macOS, keyring на Linux, если он доступен. Загрузки лежат в подпапке `Downloads`.
 

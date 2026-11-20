@@ -30,16 +30,32 @@ function render() {
     tr.title = a.translated ? 'Показать оригинал (Ctrl+Shift+Y)' : 'Перевести страницу (Ctrl+Shift+Y)';
     const star = $('star');
     star.textContent = a.bookmarked ? '★' : '☆';
-    star.classList.toggle('on', a.bookmarked);
+    star.classList.toggle('on', !!a.bookmarked);
     star.title = a.bookmarked ? 'Убрать из закладок (Ctrl+D)' : 'Добавить в закладки (Ctrl+D)';
     $('reload').textContent = loading ? '✕' : '⟳';
   }
 }
 
 api.on('tabs', s => { state = s; render(); });
-api.on('ip', r => {
-  ipEl.className = r.ok ? 'ok' : 'bad';
-  ipEl.textContent = r.ok ? 'IP ' + r.ip : 'прокси недоступен';
+const ipText = $('iptext');
+api.on('proxy', st => {
+  if (st.state === 'ok') {
+    ipEl.className = st.tzMismatch ? 'warn' : 'ok';
+    ipText.textContent = 'Прокси подключён · ' + (st.cc ? st.cc + ' · ' : '') + st.ip + ' · ' + st.ms + ' мс';
+    ipEl.title = 'Прокси: ' + st.proxy + '\nВнешний IP: ' + st.ip +
+      (st.country ? ' (' + st.country + ')' : '') + '\nЗадержка: ' + st.ms + ' мс' +
+      (st.tzMismatch ? '\n\n⚠ Часовой пояс браузера (' + st.browserTz + ') не совпадает с поясом прокси (' +
+        st.proxyTz + '). Его можно поменять в настройках.' : '') + '\n\nНажмите, чтобы проверить ещё раз';
+  } else if (st.state === 'fail') {
+    ipEl.className = 'bad';
+    ipText.textContent = 'Нет подключения к прокси';
+    ipEl.title = (st.proxy ? 'Прокси: ' + st.proxy + '\n' : '') + (st.error || '') +
+      '\n\nПовторная попытка каждые 10 секунд. Нажмите, чтобы проверить сейчас.';
+  } else {
+    ipEl.className = 'wait';
+    ipText.textContent = 'Подключение к прокси…';
+    ipEl.title = 'Подключение к прокси…';
+  }
 });
 api.on('focus-address', () => { addr.focus(); addr.select(); });
 let toastTimer;
@@ -111,7 +127,7 @@ $('fwd').onclick = () => api.send('nav:fwd');
 $('reload').onclick = () => api.send(loading ? 'nav:stop' : 'nav:reload');
 $('settings').onclick = () => api.send('settings:open');
 $('dl').onclick = () => api.send('downloads:open');
-ipEl.onclick = () => { ipEl.className = 'wait'; ipEl.textContent = 'проверка…'; api.send('ip:check'); };
+ipEl.onclick = () => api.send('ip:check');
 addr.addEventListener('keydown', e => {
   if (e.key === 'Enter') { api.send('nav:go', addr.value); addr.blur(); }
   if (e.key === 'Escape') { addr.blur(); render(); }

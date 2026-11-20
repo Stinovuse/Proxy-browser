@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta http-equiv="Content-Security-Policy" content="default-src 'self'; style-src 'self' 'unsafe-inline'; script-src 'self'">
-<title>Proxy Browser</title>
+<title>S Browser</title>
 <style>
   * { box-sizing: border-box; }
   html, body { margin: 0; height: 112px; overflow: hidden; background: #1e1f22; color: #ddd;
@@ -27,10 +27,15 @@
   #addr { flex: 1; height: 30px; border: 1px solid #4a4d55; border-radius: 15px; background: #1e1f22;
     color: #eee; padding: 0 14px; font: inherit; outline: none; user-select: text; }
   #addr:focus { border-color: #6c8cff; }
-  #ip { padding: 4px 10px; border-radius: 12px; font-size: 12px; white-space: nowrap; cursor: pointer; }
+  #ip { display: flex; align-items: center; gap: 6px; padding: 4px 10px; border-radius: 12px; font-size: 12px;
+    white-space: nowrap; cursor: pointer; max-width: 340px; overflow: hidden; text-overflow: ellipsis; }
+  #ip .dot { width: 8px; height: 8px; border-radius: 50%; background: currentColor; flex: none; }
   #ip.ok { background: #1f3d2a; color: #7ee2a0; }
+  #ip.warn { background: #3d351f; color: #ffd166; }
   #ip.bad { background: #4a1f22; color: #ff8a8a; }
-  #ip.wait { background: #33363c; color: #aaa; }
+  #ip.wait { background: #33363c; color: #c9c9c9; }
+  #ip.wait .dot { animation: pulse 1s ease-in-out infinite; }
+  @keyframes pulse { 50% { opacity: .25; } }
   #star { font-size: 18px !important; }
   #tr { width: auto !important; padding: 0 6px; font-size: 13px !important; font-weight: 600; }
   #tr.on { background: #2b3f73 !important; color: #a9bcff; }
@@ -62,7 +67,7 @@
     <input id="addr" spellcheck="false" placeholder="Адрес или поиск">
     <button id="tr" title="Перевести страницу (Ctrl+Shift+Y)">文A</button>
     <button id="star" title="Добавить в закладки (Ctrl+D)">☆</button>
-    <span id="ip" class="wait" title="Внешний IP (через прокси). Нажмите, чтобы проверить">проверка…</span>
+    <span id="ip" class="wait" title="Подключение к прокси…"><i class="dot"></i><span id="iptext">Подключение…</span></span>
     <button id="upd" title="Установить обновление и перезапустить" style="display:none">⬆</button>
     <button id="dl" title="Папка загрузок">⤓</button>
     <button id="settings" title="Настройки прокси">⚙</button>

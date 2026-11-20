@@ -1,6 +1,6 @@
 'use strict';
 /*
- * Proxy Browser — Chromium (Electron), выходящий в сеть ТОЛЬКО через прокси.
+ * S Browser — Chromium (Electron), выходящий в сеть ТОЛЬКО через прокси.
  *
  * Защита:
  *  - прокси задаётся флагом Chromium + на уровне сессии, без fallback на DIRECT;
@@ -11,18 +11,25 @@
  *  - данные браузера в отдельной папке, file:// заблокирован,
  *    доступ к камере/микрофону/геолокации/USB и т.п. запрещён;
  *  - загрузки сохраняются только в собственную папку приложения;
- *  - часовой пояс подменяется (по умолчанию UTC+8);
+ *  - часовой пояс подменяется (по умолчанию Сингапур, UTC+8);
  *  - автоперевод страниц и автообновление — тоже только через прокси.
  */
 const {
   app, BaseWindow, BrowserWindow, WebContentsView, Menu,
-  ipcMain, session, safeStorage, shell,
+  ipcMain, session, safeStorage, shell, net,
 } = require('electron');
 const path = require('path');
 const fs = require('fs');
 
 // ---------- Изолированная папка данных ----------
-const DATA_DIR = path.join(app.getPath('appData'), 'ProxyBrowser');
+const APP_NAME = 'S Browser';
+app.setName(APP_NAME);
+const OLD_DATA_DIR = path.join(app.getPath('appData'), 'ProxyBrowser');
+let DATA_DIR = path.join(app.getPath('appData'), 'SBrowser');
+// Переезд со старого имени (Proxy Browser): настройки, закладки и cookies сохраняются
+if (!fs.existsSync(DATA_DIR) && fs.existsSync(OLD_DATA_DIR)) {
+  try { fs.renameSync(OLD_DATA_DIR, DATA_DIR); } catch { DATA_DIR = OLD_DATA_DIR; }
+}
 fs.mkdirSync(DATA_DIR, { recursive: true });
 app.setPath('userData', DATA_DIR);
 const CFG_PATH = path.join(DATA_DIR, 'config.json');
@@ -31,6 +38,7 @@ const DL_DIR = path.join(DATA_DIR, 'Downloads');
 const START_URL = 'https://duckduckgo.com/';
 const SEARCH_URL = 'https://duckduckgo.com/?q=';
 const IP_CHECK_URL = 'https://api.ipify.org?format=json';
+const IP_INFO_URL = 'https://ipwho.is/';
 const TOOLBAR_H = 112;
 const BM_PATH = path.join(DATA_DIR, 'bookmarks.json');
 const PROXY_TYPES = ['http', 'https', 'socks5', 'socks4'];
@@ -43,10 +51,12 @@ const configured = !!(cfg && cfg.host && cfg.port && PROXY_TYPES.includes(cfg.ty
 const proxyUrl = configured ? `${cfg.type}://${cfg.host}:${cfg.port}` : null;
 
 // ---------- Часовой пояс ----------
-const TZ_DEFAULT = 'Asia/Shanghai'; // UTC+8
+const TZ_DEFAULT = 'Asia/Singapore'; // UTC+8
 const TZ_RE = /^(UTC|[A-Za-z]+(\/[A-Za-z0-9_+-]+)+)$/;
-const TIMEZONE = (cfg && cfg.timezone === 'system') ? 'system'
-  : (cfg && TZ_RE.test(cfg.timezone || '')) ? cfg.timezone : TZ_DEFAULT;
+// Версии до 1.4 по умолчанию ставили Китай — переводим их на Сингапур
+const tzStored = cfg && !cfg.tzV2 && cfg.timezone === 'Asia/Shanghai' ? TZ_DEFAULT : cfg && cfg.timezone;
+const TIMEZONE = tzStored === 'system' ? 'system'
+  : TZ_RE.test(tzStored || '') ? tzStored : TZ_DEFAULT;
 if (TIMEZONE !== 'system') process.env.TZ = TIMEZONE; // для процессов Chromium (воркеры и т.п.)
 
 // ---------- Перевод ----------
@@ -98,14 +108,50 @@ function decryptPass(o) {
   } catch { return ''; }
 }
 
-let authAttempts = 0;
-app.on('login', (event, _wc, _details, authInfo, callback) => {
-  if (!authInfo.isProxy) return; // авторизацию сайтов не трогаем — Chromium покажет свою
+// Логин/пароль прокси подставляются автоматически — и для вкладок, и для служебных запросов
+const authTries = new WeakMap();
+app.on('login', (event, wc, _details, authInfo, callback) => {
+  if (!authInfo.isProxy) return; // авторизацию сайтов не трогаем
   event.preventDefault();
-  if (!configured || !cfg.user || authAttempts >= 3) return callback(); // отмена
-  authAttempts++;
+  const n = (wc && authTries.get(wc)) || 0;
+  if (!configured || !cfg.user || n >= 3) return callback(); // отмена
+  if (wc) authTries.set(wc, n + 1);
   callback(cfg.user, decryptPass(cfg.pass));
 });
+
+// HTTP-запрос строго через прокси, с авторизацией на прокси.
+// (session.fetch не умеет отвечать на запрос пароля прокси — поэтому раньше
+// индикатор при запуске показывал «прокси недоступен»)
+function proxyRequest(url, { method = 'GET', headers = {}, body = null, timeout = 15000 } = {}) {
+  return new Promise((resolve, reject) => {
+    let req;
+    try {
+      req = net.request({ url, method, session: ses, useSessionCookies: false, redirect: 'follow', cache: 'no-store' });
+    } catch (e) { return reject(e); }
+    let tries = 0;
+    req.on('login', (authInfo, cb) => {
+      if (authInfo.isProxy && configured && cfg.user && tries++ < 2) cb(cfg.user, decryptPass(cfg.pass));
+      else cb();
+    });
+    for (const [k, v] of Object.entries(headers)) req.setHeader(k, v);
+    const timer = setTimeout(() => { try { req.abort(); } catch {} reject(new Error('timeout')); }, timeout);
+    req.on('response', (res) => {
+      const chunks = [];
+      res.on('data', c => chunks.push(c));
+      res.on('end', () => { clearTimeout(timer); resolve({ status: res.statusCode, text: Buffer.concat(chunks).toString('utf8') }); });
+      res.on('error', (e) => { clearTimeout(timer); reject(e); });
+    });
+    req.on('error', (e) => { clearTimeout(timer); reject(e); });
+    if (body) req.write(body);
+    req.end();
+  });
+}
+async function proxyJson(url, opts) {
+  const r = await proxyRequest(url, opts);
+  if (r.status === 407) throw new Error('ERR_PROXY_AUTH');
+  if (r.status < 200 || r.status >= 300) throw new Error('HTTP ' + r.status);
+  return JSON.parse(r.text);
+}
 
 // ---------- Сессия ----------
 let ses;
@@ -115,7 +161,9 @@ async function setupSession() {
   await ses.forceReloadProxyConfig?.();
 
   // Убираем "Electron" из User-Agent, чтобы выглядеть как обычный Chrome
-  ses.setUserAgent(ses.getUserAgent().replace(/\s(Electron|proxy-browser|Proxy Browser)\/\S+/g, ''));
+  ses.setUserAgent(ses.getUserAgent()
+    .replace(/\s(Electron|proxy-browser|s-browser)\/\S+/gi, '')
+    .replace(/\s(S Browser|Proxy Browser)\/\S+/g, ''));
 
   const allowed = new Set(['fullscreen', 'clipboard-sanitized-write']);
   ses.setPermissionRequestHandler((_wc, perm, cb) => cb(allowed.has(perm)));
@@ -279,6 +327,7 @@ function newTab(url = START_URL) {
   });
   wc.on('did-fail-load', (_e, code, desc, u, isMain) => {
     if (!isMain || code === -3) return; // -3 = ABORTED
+    if (/PROXY|TUNNEL|SOCKS/i.test(desc) && proxyStatus.state === 'ok') checkProxy();
     tab.errorUrl = u;
     wc.loadURL(errorPage(code, desc, u)).catch(() => {});
     setTimeout(() => { tab.errorUrl = u; sendTabs(); }, 50);
@@ -327,15 +376,13 @@ function trCacheSet(k, v) {
 async function gtranslate(text, tl) {
   const base = `${TR_URL}?client=gtx&sl=auto&tl=${encodeURIComponent(tl)}&dt=t`;
   const q = encodeURIComponent(text);
-  const r = q.length < 6000
-    ? await ses.fetch(`${base}&q=${q}`)
-    : await ses.fetch(base, {
+  const j = q.length < 6000
+    ? await proxyJson(`${base}&q=${q}`)
+    : await proxyJson(base, {
       method: 'POST',
       headers: { 'Content-Type': 'application/x-www-form-urlencoded;charset=UTF-8' },
       body: 'q=' + q,
     });
-  if (!r.ok) throw new Error('HTTP ' + r.status);
-  const j = await r.json();
   return { text: (j[0] || []).map(x => (x && x[0]) || '').join(''), lang: j[2] || null };
 }
 function tabBySender(sender) { return tabs.find(t => t.view.webContents === sender); }
@@ -383,20 +430,64 @@ function handleShortcut(e, input) {
   else if (k === 'f12') { t?.view.webContents.toggleDevTools(); e.preventDefault(); }
 }
 
-async function checkIp() {
+// ---------- Состояние подключения к прокси ----------
+// Прокси включён всегда (это единственный путь в сеть). Индикатор показывает,
+// работает ли он: «Подключение…» → «Подключено» / «Нет подключения».
+let proxyStatus = { state: 'connecting' };
+let proxyTimer = null;
+let ipInfo = null; // { ip, cc, country, tz } — запрашивается только при смене IP
+
+function proxyErrorText(e) {
+  const m = String((e && e.message) || e);
+  if (/PROXY_AUTH|407/.test(m)) return 'Неверный логин или пароль прокси';
+  if (/PROXY_CONNECTION_FAILED|CONNECTION_REFUSED/.test(m)) return 'Прокси не отвечает (проверьте адрес и порт)';
+  if (/TUNNEL_CONNECTION_FAILED|SOCKS/.test(m)) return 'Прокси отказал в подключении';
+  if (/NAME_NOT_RESOLVED/.test(m)) return 'Не удаётся найти адрес прокси';
+  if (/INTERNET_DISCONNECTED|NETWORK_CHANGED|ADDRESS_UNREACHABLE/.test(m)) return 'Нет интернета';
+  if (/timeout|TIMED_OUT/.test(m)) return 'Прокси не ответил вовремя';
+  return 'Ошибка: ' + m.replace(/^net::/, '');
+}
+
+function sendProxyStatus() {
+  if (ui && !ui.webContents.isDestroyed()) ui.webContents.send('proxy', proxyStatus);
+}
+
+async function checkProxy() {
+  clearTimeout(proxyTimer);
+  if (!configured) return;
+  if (proxyStatus.state !== 'ok') { proxyStatus = { state: 'connecting' }; sendProxyStatus(); }
+  const t0 = Date.now();
+  let next = 10_000;
   try {
-    const r = await ses.fetch(IP_CHECK_URL, { cache: 'no-store' });
-    const j = await r.json();
-    ui.webContents.send('ip', { ok: true, ip: j.ip });
-  } catch {
-    ui.webContents.send('ip', { ok: false });
+    const j = await proxyJson(IP_CHECK_URL, { timeout: 12000 });
+    const ms = Date.now() - t0;
+    if (!ipInfo || ipInfo.ip !== j.ip) {
+      ipInfo = { ip: j.ip };
+      try {
+        const w = await proxyJson(`${IP_INFO_URL}${encodeURIComponent(j.ip)}?fields=success,ip,country,country_code,timezone`, { timeout: 8000 });
+        if (w && w.success !== false) {
+          ipInfo = { ip: j.ip, cc: w.country_code || '', country: w.country || '', tz: (w.timezone && w.timezone.id) || '' };
+        }
+      } catch { /* страна необязательна */ }
+    }
+    proxyStatus = {
+      state: 'ok', ip: ipInfo.ip, cc: ipInfo.cc || '', country: ipInfo.country || '', ms,
+      proxy: `${cfg.type.toUpperCase()} ${cfg.host}:${cfg.port}`,
+      tzMismatch: !!(ipInfo.tz && TIMEZONE !== 'system' && ipInfo.tz !== TIMEZONE),
+      proxyTz: ipInfo.tz || '', browserTz: TIMEZONE,
+    };
+    next = 60_000;
+  } catch (e) {
+    proxyStatus = { state: 'fail', error: proxyErrorText(e), proxy: `${cfg.type.toUpperCase()} ${cfg.host}:${cfg.port}` };
   }
+  sendProxyStatus();
+  proxyTimer = setTimeout(checkProxy, next);
 }
 
 function createMainWindow() {
   win = new BaseWindow({
     width: 1280, height: 820, minWidth: 600, minHeight: 400,
-    title: 'Proxy Browser', backgroundColor: '#1e1f22', autoHideMenuBar: true,
+    title: APP_NAME, backgroundColor: '#1e1f22', autoHideMenuBar: true,
     icon: path.join(__dirname, 'ui', 'icon.png'),
   });
   ui = new WebContentsView({
@@ -408,8 +499,8 @@ function createMainWindow() {
   ui.webContents.once('did-finish-load', () => {
     sendBookmarks();
     newTab();
-    checkIp();
-    setInterval(checkIp, 60_000);
+    sendProxyStatus();
+    checkProxy();
   });
   win.on('resize', layout);
   win.on('closed', () => app.quit());
@@ -421,7 +512,7 @@ let settingsWin = null;
 function openSettings() {
   if (settingsWin) return settingsWin.focus();
   settingsWin = new BrowserWindow({
-    width: 500, height: 820, resizable: true, title: 'Настройки',
+    width: 500, height: 820, resizable: true, title: 'Настройки — S Browser',
     autoHideMenuBar: true, backgroundColor: '#1e1f22',
     icon: path.join(__dirname, 'ui', 'icon.png'),
     webPreferences: { preload: path.join(__dirname, 'preload.js'), contextIsolation: true, sandbox: true },
@@ -446,7 +537,7 @@ ipcMain.on('nav:back', () => activeTab()?.view.webContents.navigationHistory?.go
 ipcMain.on('nav:fwd', () => activeTab()?.view.webContents.navigationHistory?.goForward());
 ipcMain.on('nav:reload', () => activeTab()?.view.webContents.reload());
 ipcMain.on('nav:stop', () => activeTab()?.view.webContents.stop());
-ipcMain.on('ip:check', () => checkIp());
+ipcMain.on('ip:check', () => { proxyStatus = { state: 'connecting' }; sendProxyStatus(); checkProxy(); });
 ipcMain.on('settings:open', () => openSettings());
 ipcMain.on('downloads:open', () => { fs.mkdirSync(DL_DIR, { recursive: true }); shell.openPath(DL_DIR); });
 
@@ -566,6 +657,11 @@ function setupUpdater() {
     if (ui && !ui.webContents.isDestroyed()) ui.webContents.send('update', { version: info.version });
   });
   autoUpdater.on('error', () => {});
+  // Пароль прокси для запросов обновлений
+  autoUpdater.on('login', (authInfo, callback) => {
+    if (authInfo && authInfo.isProxy && cfg.user) callback(cfg.user, decryptPass(cfg.pass));
+    else callback();
+  });
   const check = () => { autoUpdater.checkForUpdates().catch(() => {}); };
   setTimeout(check, 15_000);
   setInterval(check, 3 * 60 * 60 * 1000);
@@ -600,6 +696,7 @@ ipcMain.handle('settings:save', (_e, data) => {
     type, host, port, user, incognito: !!data.incognito,
     noCache: data.noCache !== false, block3p: data.block3p !== false,
     timezone: (data.timezone === 'system' || TZ_RE.test(data.timezone || '')) ? data.timezone : TZ_DEFAULT,
+    tzV2: true,
     autoTranslate: data.autoTranslate !== false,
     translateTo: TR_LANGS.includes(data.translateTo) ? data.translateTo : 'ru',
   };

@@ -5,10 +5,10 @@ api.invoke('settings:get').then(c => {
   $('type').value = c.type; $('host').value = c.host; $('port').value = c.port;
   $('user').value = c.user; $('incognito').checked = c.incognito;
   $('noCache').checked = c.noCache; $('block3p').checked = c.block3p;
-  $('timezone').value = c.timezone || 'Asia/Shanghai';
+  $('timezone').value = c.timezone || 'Asia/Singapore';
   $('autoTranslate').checked = c.autoTranslate !== false;
   $('translateTo').value = c.translateTo || 'ru';
-  if (c.version) $('ver').textContent = 'Proxy Browser ' + c.version;
+  if (c.version) $('ver').textContent = 'S Browser ' + c.version;
   if (c.hasPass) $('passhint').textContent = 'Пароль сохранён. Оставьте поле пустым, чтобы не менять.';
   if (!c.configured) $('clear').style.display = 'none';
 });
