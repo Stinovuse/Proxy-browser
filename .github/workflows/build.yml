@@ -76,6 +76,22 @@ jobs:
           path: installer-screens/*.png
           retention-days: 7
 
+      - name: Publish screenshots to ci-screenshots branch
+        if: always()
+        continue-on-error: true
+        shell: bash
+        run: |
+          [ -d installer-screens ] && ls installer-screens/*.png >/dev/null 2>&1 || exit 0
+          mkdir -p /tmp/shots && cp installer-screens/*.png /tmp/shots/
+          git config user.name "ci-bot" && git config user.email "ci-bot@users.noreply.github.com"
+          git checkout --orphan ci-screenshots
+          git rm -rf --cached . >/dev/null
+          git clean -fdq -e node_modules -e dist
+          cp /tmp/shots/*.png .
+          git add *.png
+          git commit -qm "Installer screenshots from build ${{ github.run_number }}"
+          git push -f origin HEAD:ci-screenshots
+
       - name: Upload installer (artifact)
         uses: actions/upload-artifact@v4
         with:
