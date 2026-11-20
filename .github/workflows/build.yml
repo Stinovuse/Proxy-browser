@@ -21,6 +21,10 @@ jobs:
       - name: Install dependencies
         run: npm install
 
+      - name: Show NSIS template (debug)
+        shell: bash
+        run: sed -n '1,200p' node_modules/app-builder-lib/templates/nsis/assistedInstaller.nsh | sed 's/^/TPL| /'
+
       - name: Set version (major.minor from package.json, patch = build number)
         id: ver
         shell: bash
