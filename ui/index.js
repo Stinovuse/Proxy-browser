@@ -241,24 +241,103 @@ function actBtn(name, title, ch, id, cls) {
   b.onclick = (e) => { e.stopPropagation(); api.send(ch, id); };
   return b;
 }
-function orb(d, t) {
-  const o = document.createElement('div');
-  o.className = 'orb';
-  o.style.setProperty('--c', t.color);
+// ---- Строка загрузки: создаётся один раз, дальше меняются только значения ----
+// (раньше список пересоздавался 4 раза в секунду: строки «дёргались», а нажатие
+// на «Пауза» могло потеряться, потому что кнопку успевали заменить)
+const dlEls = new Map();
+const NS = 'http://www.w3.org/2000/svg';
+
+function makeDlRow(d) {
+  const t = typeOf(d.name);
+  const el = document.createElement('div');
+  el.className = 'di';
+  const orbEl = document.createElement('div'); orbEl.className = 'orb';
+  orbEl.style.setProperty('--c', t.color);
+  const svg = document.createElementNS(NS, 'svg'); svg.setAttribute('class', 'ring'); svg.setAttribute('viewBox', '0 0 44 44');
+  const mk = (cls) => {
+    const c = document.createElementNS(NS, 'circle');
+    c.setAttribute('class', cls); c.setAttribute('cx', '22'); c.setAttribute('cy', '22'); c.setAttribute('r', String(ORB_R));
+    c.setAttribute('fill', 'none'); c.setAttribute('stroke-width', '2.5');
+    return c;
+  };
+  const trk = mk('trk'), val = mk('val');
+  val.setAttribute('stroke-linecap', 'round'); val.setAttribute('stroke-dasharray', String(ORB_LEN));
+  val.setAttribute('stroke-dashoffset', String(ORB_LEN));
+  svg.append(trk, val);
+  const core = document.createElement('div'); core.className = 'core';
+  orbEl.append(svg, core);
+  const body = document.createElement('div'); body.className = 'body';
+  const nm = document.createElement('div'); nm.className = 'nm'; nm.textContent = d.name; nm.title = d.name;
+  const bar = document.createElement('div'); bar.className = 'bar';
+  const fill = document.createElement('i'); bar.appendChild(fill);
+  const meta = document.createElement('div'); meta.className = 'meta';
+  body.append(nm, bar, meta);
+  const acts = document.createElement('div'); acts.className = 'acts';
+  el.append(orbEl, body, acts);
+  el.ondblclick = () => { if (el.dataset.state === 'completed') api.send('dl:open', d.id); };
+  return { el, t, val, core, bar, fill, meta, acts, key: {} };
+}
+
+function updateDlRow(r, d) {
+  const failed = d.state === 'interrupted' || d.state === 'cancelled';
+  const cls = 'di ' + (failed ? 'failed' : d.state) + (d.paused ? ' paused' : '') +
+    (d.state === 'progressing' && !d.total ? ' indet' : '');
+  if (r.el.className !== cls) r.el.className = cls;
+  r.el.dataset.state = d.state;
+  r.el.title = d.state === 'completed' ? 'Двойной клик — открыть' : '';
+
+  // кольцо
   const frac = d.state === 'completed' ? 1 : d.total ? d.received / d.total : 0.25;
-  const stroke = d.state === 'completed' ? 'var(--ok)' : (d.state === 'interrupted' || d.state === 'cancelled') ? 'var(--bad)'
-    : d.paused ? '#fbbf24' : t.color;
-  o.innerHTML = `<svg class="ring" viewBox="0 0 44 44"><circle class="trk" cx="22" cy="22" r="${ORB_R}" fill="none" stroke-width="2.5"/>` +
-    `<circle class="val" cx="22" cy="22" r="${ORB_R}" fill="none" stroke-width="2.5" stroke-linecap="round" stroke="${stroke}" ` +
-    `stroke-dasharray="${ORB_LEN}" stroke-dashoffset="${ORB_LEN * (1 - frac)}"/></svg>`;
-  const core = document.createElement('div');
-  core.className = 'core';
-  core.style.background = `radial-gradient(circle at 30% 25%, ${t.color}, ${t.color}66)`;
-  if (d.state === 'completed') core.innerHTML = icon('check');
-  else if (d.state === 'interrupted' || d.state === 'cancelled') { core.innerHTML = icon('alert'); core.style.background = 'rgba(251,113,133,.25)'; }
-  else core.textContent = t.ext;
-  o.appendChild(core);
-  return o;
+  const stroke = d.state === 'completed' ? 'var(--ok)' : failed ? 'var(--bad)' : d.paused ? '#fbbf24' : r.t.color;
+  r.val.setAttribute('stroke', stroke);
+  r.val.setAttribute('stroke-dashoffset', String(ORB_LEN * (1 - frac)));
+
+  // значок в центре — только при смене состояния
+  const coreKey = d.state === 'completed' ? 'ok' : failed ? 'bad' : 'ext';
+  if (r.key.core !== coreKey) {
+    r.key.core = coreKey;
+    if (coreKey === 'ok') { r.core.innerHTML = icon('check'); r.core.style.background = `radial-gradient(circle at 30% 25%, ${r.t.color}, ${r.t.color}66)`; }
+    else if (coreKey === 'bad') { r.core.innerHTML = icon('alert'); r.core.style.background = 'rgba(251,113,133,.25)'; }
+    else { r.core.textContent = r.t.ext; r.core.style.background = `radial-gradient(circle at 30% 25%, ${r.t.color}, ${r.t.color}66)`; }
+  }
+
+  // полоса
+  r.bar.style.display = d.state === 'progressing' ? '' : 'none';
+  if (d.state === 'progressing') r.fill.style.width = d.total ? Math.max(2, d.received / d.total * 100).toFixed(1) + '%' : '35%';
+
+  // подпись
+  let text, speedText = '', tail = '';
+  if (d.state === 'progressing') {
+    text = (d.total ? Math.floor(d.received / d.total * 100) + '% · ' : '') + fmtBytes(d.received) + (d.total ? ' из ' + fmtBytes(d.total) : '');
+    if (d.paused) text += ' · пауза';
+    else if (d.speed > 0) {
+      speedText = ' · ' + fmtBytes(d.speed) + '/с';
+      if (d.total) { const left = fmtTime((d.total - d.received) / d.speed); if (left) tail = ' · ' + left; }
+    }
+  } else if (d.state === 'completed') text = 'Готово · ' + fmtBytes(d.received);
+  else text = d.state === 'cancelled' ? 'Отменено' : 'Ошибка загрузки';
+  const metaKey = text + '|' + speedText + '|' + tail;
+  if (r.key.meta !== metaKey) {
+    r.key.meta = metaKey;
+    r.meta.textContent = text;
+    if (speedText) { const sp = document.createElement('span'); sp.className = 'sp'; sp.textContent = speedText; r.meta.appendChild(sp); }
+    if (tail) r.meta.append(tail);
+  }
+
+  // кнопки — пересоздаём только при смене состояния/паузы
+  const actKey = d.state + (d.paused ? ':p' : '');
+  if (r.key.acts !== actKey) {
+    r.key.acts = actKey;
+    r.acts.textContent = '';
+    if (d.state === 'progressing') {
+      r.acts.append(
+        actBtn(d.paused ? 'play' : 'pause', d.paused ? 'Продолжить' : 'Пауза', 'dl:pause', d.id),
+        actBtn('close', 'Отменить', 'dl:cancel', d.id, 'danger'),
+      );
+    } else if (d.state === 'completed') {
+      r.acts.append(actBtn('open', 'Открыть файл', 'dl:open', d.id), actBtn('folder', 'Показать в папке', 'dl:show', d.id));
+    }
+  }
 }
 
 function renderDownloads() {
@@ -289,60 +368,28 @@ function renderDownloads() {
   }
 
   // сводка
+  let sum;
   if (active.length) {
-    dlSum.textContent = `${active.length} ${active.length === 1 ? 'файл' : 'файла'} · ` +
+    sum = `${active.length} ${active.length === 1 ? 'файл' : 'файла'} · ` +
       (speed > 0 ? fmtBytes(speed) + '/с' : 'ожидание') +
       (total && speed > 0 ? ' · осталось ' + fmtTime((total - got) / speed) : '');
   } else {
     const done = dls.filter(d => d.state === 'completed').length;
-    dlSum.textContent = dls.length ? `Готово: ${done} из ${dls.length}` : '';
+    sum = dls.length ? `Готово: ${done} из ${dls.length}` : '';
   }
+  if (dlSum.textContent !== sum) dlSum.textContent = sum;
 
   // список рисуем, только когда панель открыта
   if (!panelOpen) return;
-  dlList.textContent = '';
   dlEmpty.style.display = dls.length ? 'none' : '';
-  for (const d of dls) {
-    const failed = d.state === 'interrupted' || d.state === 'cancelled';
-    const t = typeOf(d.name);
-    const el = document.createElement('div');
-    el.className = 'di ' + (failed ? 'failed' : d.state) + (d.paused ? ' paused' : '') +
-      (d.state === 'progressing' && !d.total ? ' indet' : '');
-    const body = document.createElement('div'); body.className = 'body';
-    const nm = document.createElement('div'); nm.className = 'nm'; nm.textContent = d.name; nm.title = d.name;
-    body.appendChild(nm);
-    const meta = document.createElement('div'); meta.className = 'meta';
-    const acts = document.createElement('div'); acts.className = 'acts';
-    if (d.state === 'progressing') {
-      const bar = document.createElement('div'); bar.className = 'bar';
-      const i = document.createElement('i');
-      i.style.width = d.total ? Math.max(2, d.received / d.total * 100).toFixed(1) + '%' : '35%';
-      bar.appendChild(i); body.appendChild(bar);
-      const pct = d.total ? Math.floor(d.received / d.total * 100) + '% · ' : '';
-      meta.textContent = pct + fmtBytes(d.received) + (d.total ? ' из ' + fmtBytes(d.total) : '');
-      if (d.paused) meta.textContent += ' · пауза';
-      else if (d.speed > 0) {
-        const sp = document.createElement('span'); sp.className = 'sp';
-        sp.textContent = ' · ' + fmtBytes(d.speed) + '/с';
-        meta.appendChild(sp);
-        if (d.total) { const left = fmtTime((d.total - d.received) / d.speed); if (left) meta.append(' · ' + left); }
-      }
-      acts.append(
-        actBtn(d.paused ? 'play' : 'pause', d.paused ? 'Продолжить' : 'Пауза', 'dl:pause', d.id),
-        actBtn('close', 'Отменить', 'dl:cancel', d.id, 'danger'),
-      );
-    } else if (d.state === 'completed') {
-      meta.textContent = 'Готово · ' + fmtBytes(d.received);
-      acts.append(actBtn('open', 'Открыть файл', 'dl:open', d.id), actBtn('folder', 'Показать в папке', 'dl:show', d.id));
-      el.ondblclick = () => api.send('dl:open', d.id);
-      el.title = 'Двойной клик — открыть';
-    } else {
-      meta.textContent = d.state === 'cancelled' ? 'Отменено' : 'Ошибка загрузки';
-    }
-    body.appendChild(meta);
-    el.append(orb(d, t), body, acts);
-    dlList.appendChild(el);
-  }
+  const ids = new Set(dls.map(d => d.id));
+  for (const [id, r] of dlEls) if (!ids.has(id)) { r.el.remove(); dlEls.delete(id); }
+  dls.forEach((d, i) => {
+    let r = dlEls.get(d.id);
+    if (!r) { r = makeDlRow(d); dlEls.set(d.id, r); }
+    updateDlRow(r, d);
+    if (dlList.children[i] !== r.el) dlList.insertBefore(r.el, dlList.children[i] || null);
+  });
 }
 api.on('downloads', list => { dls = list; renderDownloads(); });
 
