@@ -39,6 +39,9 @@ const START_URL = 'https://duckduckgo.com/';
 const SEARCH_URL = 'https://duckduckgo.com/?q=';
 const IP_CHECK_URL = 'https://api.ipify.org?format=json';
 const IP_INFO_URL = 'https://ipwho.is/';
+// DNS-сервер, которым пользуется прокси: случайное имя разрешает именно он,
+// и сервис видит его адрес и страну. Только http — у бесплатного ip-api нет https.
+const DNS_INFO_HOST = 'edns.ip-api.com';
 const TOOLBAR_H = 112;
 const BM_PATH = path.join(DATA_DIR, 'bookmarks.json');
 const PROXY_TYPES = ['http', 'https', 'socks5', 'socks4'];
@@ -99,6 +102,7 @@ const TR_EXCL_PATH = path.join(DATA_DIR, 'translate-exclude.json');
 const TR_URL = 'https://translate.googleapis.com/translate_a/single';
 
 // ---------- Автообновление ----------
+const { protect, restore } = require('./lib/protect');
 let autoUpdater = null;
 try { ({ autoUpdater } = require('electron-updater')); } catch { /* в режиме разработки может отсутствовать */ }
 
@@ -855,6 +859,14 @@ function sendProxyStatus() {
   if (ui && !ui.webContents.isDestroyed()) ui.webContents.send('proxy', proxyStatus);
 }
 
+// Текущее смещение пояса от UTC, например «GMT+8»
+function tzOffset(tz) {
+  try {
+    const p = new Intl.DateTimeFormat('en-US', { timeZone: tz, timeZoneName: 'shortOffset' }).formatToParts(new Date());
+    return (p.find(x => x.type === 'timeZoneName') || {}).value || null;
+  } catch { return null; }
+}
+
 async function checkProxy() {
   clearTimeout(proxyTimer);
   if (!configured) return;
@@ -872,12 +884,27 @@ async function checkProxy() {
           ipInfo = { ip: j.ip, cc: w.country_code || '', country: w.country || '', tz: (w.timezone && w.timezone.id) || '' };
         }
       } catch { /* страна необязательна */ }
+      try {
+        const rnd = require('crypto').randomBytes(16).toString('hex'); // 32 символа
+        const d = await proxyJson(`http://${rnd}.${DNS_INFO_HOST}/json`, { timeout: 8000 });
+        if (d && d.dns && d.dns.ip) {
+          const [country, ...isp] = String(d.dns.geo || '').split(' - ');
+          ipInfo.dns = { ip: d.dns.ip, country: (country || '').trim(), isp: isp.join(' - ').trim() };
+        }
+      } catch { /* DNS-проверка необязательна */ }
     }
+    const norm = (x) => String(x || '').toLowerCase().replace(/^the\s+/, '').trim();
+    const dns = ipInfo.dns || null;
+    const browserOff = TIMEZONE !== 'system' ? tzOffset(TIMEZONE) : null;
+    const proxyOff = ipInfo.tz ? tzOffset(ipInfo.tz) : null;
     proxyStatus = {
       state: 'ok', ip: ipInfo.ip, cc: ipInfo.cc || '', country: ipInfo.country || '', ms,
       proxy: `${cfg.type.toUpperCase()} ${cfg.host}:${cfg.port}`,
-      tzMismatch: !!(ipInfo.tz && TIMEZONE !== 'system' && ipInfo.tz !== TIMEZONE),
-      proxyTz: ipInfo.tz || '', browserTz: TIMEZONE,
+      // сравниваем смещение от UTC, а не название пояса (Мадрид и Берлин — одно и то же время)
+      tzMismatch: !!(browserOff && proxyOff && browserOff !== proxyOff),
+      proxyTz: ipInfo.tz || '', browserTz: TIMEZONE, proxyOff, browserOff,
+      dnsIp: dns ? dns.ip : '', dnsCountry: dns ? dns.country : '', dnsIsp: dns ? dns.isp : '',
+      dnsMismatch: !!(dns && dns.country && ipInfo.country && norm(dns.country) !== norm(ipInfo.country)),
     };
     next = 60_000;
   } catch (e) {
@@ -944,7 +971,7 @@ ipcOn('nav:back', () => activeTab()?.view.webContents.navigationHistory?.goBack(
 ipcOn('nav:fwd', () => activeTab()?.view.webContents.navigationHistory?.goForward());
 ipcOn('nav:reload', () => activeTab()?.view.webContents.reload());
 ipcOn('nav:stop', () => activeTab()?.view.webContents.stop());
-ipcOn('ip:check', () => { proxyStatus = { state: 'connecting' }; sendProxyStatus(); checkProxy(); });
+ipcOn('ip:check', () => { ipInfo = null; proxyStatus = { state: 'connecting' }; sendProxyStatus(); checkProxy(); });
 ipcOn('settings:open', () => openSettings());
 ipcOn('downloads:open', () => { fs.mkdirSync(DL_DIR, { recursive: true }); shell.openPath(DL_DIR); });
 
@@ -1009,20 +1036,32 @@ ipcHandle('tr:translate', async (e, texts, target) => {
     if (c !== undefined) out[i] = c; else if (s) need.push(i);
   });
   let lang = null;
-  if (need.length) {
+  // Названия, адреса, IP и т.п. — под метки; то, что целиком из них состоит, не переводим
+  const prot = new Map();
+  const send = [];
+  for (const i of need) {
+    const p = protect(items[i]);
+    if (p.nothingToTranslate) { out[i] = items[i]; trCacheSet(tl + '\u0000' + items[i], out[i]); continue; }
+    prot.set(i, p);
+    send.push(i);
+  }
+  if (send.length) {
     try {
-      const r = await gtranslate(need.map(i => items[i]).join('\n'), tl);
+      const r = await gtranslate(send.map(i => prot.get(i).text).join('\n'), tl);
       lang = r.lang;
       let parts = r.text.split('\n');
-      if (parts.length !== need.length) {
+      if (parts.length !== send.length) {
         // Google склеил/разбил строки — переводим по одной
         parts = [];
-        for (const i of need) parts.push((await gtranslate(items[i], tl)).text);
+        for (const i of send) parts.push((await gtranslate(prot.get(i).text, tl)).text);
       }
-      need.forEach((i, k) => {
-        out[i] = (parts[k] || '').trim();
+      for (let k = 0; k < send.length; k++) {
+        const i = send[k];
+        let t = restore((parts[k] || '').trim(), prot.get(i).tokens);
+        if (t === null) t = (await gtranslate(items[i], tl)).text.trim(); // метка потерялась — без защиты
+        out[i] = t;
         trCacheSet(tl + '\u0000' + items[i], out[i]);
-      });
+      }
     } catch {
       return { ok: false };
     }

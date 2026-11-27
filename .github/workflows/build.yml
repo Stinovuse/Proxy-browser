@@ -42,6 +42,7 @@ jobs:
           npx --yes @electron/asar list dist/win-unpacked/resources/app.asar > asar.txt
           grep -qi "electron-updater" asar.txt
           grep -qi "tab-preload.js" asar.txt
+          grep -qi "protect.js" asar.txt
           echo "OK: updater and tab preload are inside the app"
           npx --yes @electron/fuses read --app "dist/win-unpacked/S Browser.exe" | tee fuses.txt
           grep -Eq "RunAsNode is Disabled" fuses.txt

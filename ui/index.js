@@ -111,15 +111,23 @@ api.on('focus-address', () => { addr.focus(); addr.select(); });
 const ipText = $('iptext');
 api.on('proxy', st => {
   if (st.state === 'ok') {
-    ipEl.className = st.tzMismatch ? 'warn' : 'ok';
+    const warn = st.tzMismatch || st.dnsMismatch;
+    ipEl.className = warn ? 'warn' : 'ok';
     ipText.innerHTML = '';
     const a = document.createElement('span'); a.textContent = (st.cc ? st.cc + ' · ' : '') + st.ip;
     const b = document.createElement('span'); b.className = 'muted'; b.textContent = ' · ' + st.ms + ' мс';
     ipText.append(a, b);
-    ipEl.title = 'Прокси подключён\nПрокси: ' + st.proxy + '\nВнешний IP: ' + st.ip +
-      (st.country ? ' (' + st.country + ')' : '') + '\nЗадержка: ' + st.ms + ' мс' +
-      (st.tzMismatch ? '\n\n⚠ Часовой пояс браузера (' + st.browserTz + ') не совпадает с поясом прокси (' +
-        st.proxyTz + '). Его можно поменять в настройках.' : '') + '\n\nНажмите, чтобы проверить ещё раз';
+    if (warn) { const w = document.createElement('span'); w.textContent = ' · ⚠'; ipText.append(w); }
+    const lines = ['Прокси подключён', 'Прокси: ' + st.proxy,
+      'Внешний IP: ' + st.ip + (st.country ? ' (' + st.country + ')' : ''),
+      'Задержка: ' + st.ms + ' мс'];
+    if (st.dnsIp) lines.push('DNS прокси: ' + st.dnsIp + (st.dnsCountry ? ' (' + st.dnsCountry + (st.dnsIsp ? ', ' + st.dnsIsp : '') + ')' : ''));
+    const notes = [];
+    if (st.dnsMismatch) notes.push('⚠ DNS-сервер прокси находится в другой стране (' + st.dnsCountry + '), чем его IP (' + st.country +
+      '). Это не утечка ваших данных, но сайты могут заметить несовпадение. Его настраивает владелец прокси.');
+    if (st.tzMismatch) notes.push('⚠ Часовой пояс браузера (' + st.browserTz + ', ' + st.browserOff + ') не совпадает с поясом прокси (' +
+      st.proxyTz + ', ' + st.proxyOff + '). Его можно поменять в настройках.');
+    ipEl.title = lines.join('\n') + (notes.length ? '\n\n' + notes.join('\n\n') : '') + '\n\nНажмите, чтобы проверить ещё раз';
   } else if (st.state === 'fail') {
     ipEl.className = 'bad';
     ipText.textContent = 'Нет связи с прокси';
