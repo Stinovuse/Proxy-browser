@@ -244,14 +244,22 @@ async function setupSession() {
   // ---------- Сторонние cookies ----------
   // Обработчики заголовков вызываются на каждый запрос, поэтому ставим их,
   // только если блокировка включена, и выходим как можно раньше.
+  ses.webRequest.onBeforeSendHeaders((d, cb) => {
+    const h = d.requestHeaders;
+    // Вход в Google: заголовки как у Firefox (страница или запросы самой страницы входа)
+    let top = '';
+    try { top = d.webContents ? d.webContents.getURL() : ''; } catch {}
+    if (isGoogleAuthUrl(d.url) || isGoogleAuthUrl(top)) {
+      for (const k of Object.keys(h)) if (/^sec-ch-ua/i.test(k) || /^user-agent$/i.test(k)) delete h[k];
+      h['User-Agent'] = firefoxUA();
+      return cb({ requestHeaders: h });
+    }
+    if (!BLOCK_3P || d.resourceType === 'mainFrame') return cb({});
+    const k = h.Cookie !== undefined ? 'Cookie' : h.cookie !== undefined ? 'cookie' : null;
+    if (k && isThirdParty(d)) { delete h[k]; return cb({ requestHeaders: h }); }
+    cb({});
+  });
   if (BLOCK_3P) {
-    ses.webRequest.onBeforeSendHeaders((d, cb) => {
-      if (d.resourceType === 'mainFrame') return cb({});
-      const h = d.requestHeaders;
-      const k = h.Cookie !== undefined ? 'Cookie' : h.cookie !== undefined ? 'cookie' : null;
-      if (k && isThirdParty(d)) { delete h[k]; return cb({ requestHeaders: h }); }
-      cb({});
-    });
     ses.webRequest.onHeadersReceived((d, cb) => {
       if (d.resourceType === 'mainFrame') return cb({});
       const h = d.responseHeaders;
@@ -563,7 +571,7 @@ function newTab(url = START_URL) {
   });
 
   wc.setWindowOpenHandler(openHandler);
-  wc.on('did-create-window', setupPopup);
+  wc.on('did-create-window', (w, details) => setupPopup(w, details));
   wc.on('will-navigate', (e, u) => { if (!/^(https?|data|about):/i.test(e.url || u || '')) e.preventDefault(); });
   wc.on('did-start-navigation', (e, _u, inPage, isMainArg) => {
     const isMain = e.isMainFrame !== undefined ? e.isMainFrame : isMainArg;
@@ -620,7 +628,29 @@ function lockInternalPage(wc) {
   wc.setWindowOpenHandler(() => ({ action: 'deny' }));
 }
 
-function setupEmulation(wc) {
+// ---------- Вход в аккаунт Google ----------
+// Google не пускает в аккаунт «встроенные» браузеры (Electron), распознавая их по
+// внутренним отличиям от настоящего Chrome. Страницам входа Google показываем
+// Firefox: его Google проверяет иначе. Остальные сайты по-прежнему видят Chrome.
+const GOOGLE_AUTH_HOSTS = new Set(['accounts.google.com', 'accounts.youtube.com']);
+function isGoogleAuthUrl(u) {
+  try { return GOOGLE_AUTH_HOSTS.has(new URL(u).hostname); } catch { return false; }
+}
+function firefoxUA() {
+  // Firefox выходит каждые 4 недели: 133 — 26.11.2024; считаем актуальную версию от даты
+  const v = 133 + Math.max(0, Math.floor((Date.now() - Date.UTC(2024, 10, 26)) / (28 * 864e5)));
+  return `Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:${v}.0) Gecko/20100101 Firefox/${v}.0`;
+}
+
+// Скрипт до загрузки страницы: на страницах входа Google убираем объекты,
+// которых нет в Firefox (иначе подмена видна). На остальных сайтах ничего не делает.
+const GOOGLE_FF_SHIM = `(() => { try {
+  if (!${JSON.stringify([...GOOGLE_AUTH_HOSTS])}.includes(location.hostname)) return;
+  try { delete Navigator.prototype.userAgentData; } catch (e) {}
+  try { delete window.chrome; } catch (e) {}
+} catch (e) {} })();`;
+
+function setupEmulation(wc, initialUrl) {
   const dbg = wc.debugger;
   const send = (m, p, sid) => dbg.sendCommand(m, p || {}, sid).catch(() => {});
   const uaOverride = {
@@ -633,6 +663,7 @@ function setupEmulation(wc) {
     TIMEZONE !== 'system' ? send('Emulation.setTimezoneOverride', { timezoneId: TIMEZONE }, sid) : null,
     LOCALE ? send('Emulation.setLocaleOverride', { locale: LOCALE }, sid) : null,
     send('Emulation.setUserAgentOverride', uaOverride, sid),
+    send('Page.addScriptToEvaluateOnNewDocument', { source: GOOGLE_FF_SHIM }, sid),
     send('Target.setAutoAttach', { autoAttach: true, waitForDebuggerOnStart: true, flatten: true }, sid),
   ]).then(() => { if (sid) send('Runtime.runIfWaitingForDebugger', {}, sid); });
   try { dbg.attach('1.3'); } catch { return; }
@@ -640,6 +671,23 @@ function setupEmulation(wc) {
     if (method === 'Target.attachedToTarget' && params && params.sessionId) apply(params.sessionId);
   });
   apply(undefined);
+
+  // На страницах входа Google — User-Agent Firefox (без Client Hints, как у настоящего Firefox)
+  let firefoxMode = false;
+  const setMode = (url) => {
+    const want = isGoogleAuthUrl(url);
+    if (want === firefoxMode) return;
+    firefoxMode = want;
+    const o = want ? { userAgent: firefoxUA(), platform: 'Win32' } : uaOverride;
+    if (want && ACCEPT_LANG) o.acceptLanguage = ACCEPT_LANG;
+    send('Emulation.setUserAgentOverride', o);
+  };
+  if (initialUrl) setMode(initialUrl);
+  wc.on('did-start-navigation', (e, u, inPage, isMainArg) => {
+    const isMain = e.isMainFrame !== undefined ? e.isMainFrame : isMainArg;
+    const sameDoc = e.isSameDocument !== undefined ? e.isSameDocument : inPage;
+    if (isMain && !sameDoc) setMode(e.url || u);
+  });
 }
 
 // ---------- Перевод (запросы идут через прокси) ----------
@@ -766,13 +814,14 @@ function attachContextMenu(wc, tab) {
   });
 }
 
-function setupPopup(popup) {
+function setupPopup(popup, details) {
   const pwc = popup.webContents;
+  const initialUrl = (details && details.url) || '';
   popup.setMenu(null);
   pwc.setWebRTCIPHandlingPolicy('disable_non_proxied_udp');
-  setupEmulation(pwc);
+  setupEmulation(pwc, initialUrl);
   pwc.setWindowOpenHandler(openHandler);
-  pwc.on('did-create-window', setupPopup);
+  pwc.on('did-create-window', (w, d) => setupPopup(w, d));
   pwc.on('will-navigate', (e, u) => { if (!/^(https?|about):/i.test(e.url || u || '')) e.preventDefault(); });
   // В заголовке всегда виден реальный адрес — защита от поддельных окон входа
   const updateTitle = () => {
