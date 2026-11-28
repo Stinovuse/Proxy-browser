@@ -63,8 +63,8 @@ function render() {
   });
   const a = state.find(t => t.active);
   if (!a) return;
-  const isData = a.url.startsWith('data:');
-  if (document.activeElement !== addr) addr.value = isData ? '' : prettyUrl(a.url);
+  const isInternal = /^(data|sbrowser):/.test(a.url);
+  if (document.activeElement !== addr) addr.value = isInternal ? '' : prettyUrl(a.url);
   $('back').disabled = !a.canBack;
   $('fwd').disabled = !a.canFwd;
   loading = a.loading;
@@ -97,7 +97,7 @@ api.on('tabs', s => { state = s; render(); });
 addr.addEventListener('focus', () => {
   omni.classList.add('focus');
   const a = state.find(t => t.active);
-  if (a && !a.url.startsWith('data:')) addr.value = a.url;
+  if (a && !/^(data|sbrowser):/.test(a.url)) addr.value = a.url;
   setTimeout(() => addr.select(), 0);
 });
 addr.addEventListener('blur', () => { omni.classList.remove('focus'); render(); });

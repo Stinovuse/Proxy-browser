@@ -16,8 +16,14 @@
  */
 const {
   app, BaseWindow, BrowserWindow, WebContentsView, Menu,
-  ipcMain, session, safeStorage, shell, net, clipboard,
+  ipcMain, session, safeStorage, shell, net, clipboard, protocol,
 } = require('electron');
+
+// Внутренняя схема для стартовой страницы: sbrowser://newtab/
+// (до app.ready; без corsEnabled — сайты не могут читать её данные)
+protocol.registerSchemesAsPrivileged([
+  { scheme: 'sbrowser', privileges: { standard: true, secure: true, supportFetchAPI: true } },
+]);
 const path = require('path');
 const fs = require('fs');
 
@@ -35,7 +41,7 @@ app.setPath('userData', DATA_DIR);
 const CFG_PATH = path.join(DATA_DIR, 'config.json');
 const DL_DIR = path.join(DATA_DIR, 'Downloads');
 
-const START_URL = 'https://duckduckgo.com/';
+const START_URL = 'sbrowser://newtab/';
 const SEARCH_URL = 'https://duckduckgo.com/?q=';
 const IP_CHECK_URL = 'https://api.ipify.org?format=json';
 const IP_INFO_URL = 'https://ipwho.is/';
@@ -215,6 +221,31 @@ function chromeLikeUA(ua) {
   return `Mozilla/5.0 (${platform}) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/${major}.0.0.0 Safari/537.36`;
 }
 
+// ---------- Стартовая страница (sbrowser://newtab/) ----------
+const NEWTAB_DIR = path.join(__dirname, 'newtab');
+const MIME = { '.html': 'text/html; charset=utf-8', '.css': 'text/css; charset=utf-8', '.js': 'text/javascript; charset=utf-8',
+  '.png': 'image/png', '.svg': 'image/svg+xml', '.json': 'application/json; charset=utf-8' };
+function serveInternal(req) {
+  let u;
+  try { u = new URL(req.url); } catch { return new Response('Bad request', { status: 400 }); }
+  if (u.hostname !== 'newtab') return new Response('Not found', { status: 404 });
+  const name = decodeURIComponent(u.pathname).replace(/^\/+/, '') || 'index.html';
+  if (name === 'data.json') {
+    const p = proxyStatus || {};
+    const body = JSON.stringify({
+      bookmarks: bookmarks.map(b => ({ title: b.title, url: b.url })),
+      proxy: { state: p.state, country: p.country || '', cc: p.cc || '', ip: p.ip || '', warn: !!(p.tzMismatch || p.dnsMismatch) },
+    });
+    return new Response(body, { headers: { 'content-type': MIME['.json'], 'cache-control': 'no-store' } });
+  }
+  const file = path.normalize(path.join(NEWTAB_DIR, name));
+  if (!file.startsWith(NEWTAB_DIR + path.sep)) return new Response('Forbidden', { status: 403 }); // без выхода из папки
+  try {
+    const data = fs.readFileSync(file);
+    return new Response(data, { headers: { 'content-type': MIME[path.extname(file)] || 'application/octet-stream' } });
+  } catch { return new Response('Not found', { status: 404 }); }
+}
+
 // ---------- Сессия ----------
 let ses;
 async function setupSession() {
@@ -234,6 +265,7 @@ async function setupSession() {
   // file:// для сайтов закрыт. Раньше это проверялось JS-обработчиком на КАЖДЫЙ запрос;
   // перехват схемы работает внутри сети Chromium и ничего не замедляет.
   ses.protocol.handle('file', () => new Response('Blocked', { status: 403 }));
+  ses.protocol.handle('sbrowser', serveInternal);
 
   // ---------- Кэш ----------
   // Кэш работает в течение сеанса (страницы грузятся быстро), но стирается при каждом
@@ -545,6 +577,9 @@ p{margin:6px 0;line-height:1.5}.m{color:#8a90a6;font-size:13px}.u{color:#6b7086;
 }
 
 function newTab(url = START_URL) {
+  if (url === START_URL && ui && !ui.webContents.isDestroyed()) {
+    setTimeout(() => { ui.webContents.focus(); ui.webContents.send('focus-address'); }, 150);
+  }
   const view = new WebContentsView({
     webPreferences: {
       session: ses,
@@ -1279,7 +1314,7 @@ app.whenReady().then(async () => {
           language: navigator.language, languages: navigator.languages,
           tz: Intl.DateTimeFormat().resolvedOptions().timeZone,
           intlLocale: Intl.DateTimeFormat().resolvedOptions().locale,
-          secure: window.isSecureContext,
+          secure: window.isSecureContext, title: document.title, href: location.href,
           brands: navigator.userAgentData ? navigator.userAgentData.brands.map(b => b.brand) : null,
           ua: navigator.userAgent })`);
       } catch (e) { smokeErrors.push('page probe: ' + e); }
@@ -1296,6 +1331,7 @@ app.whenReady().then(async () => {
       const pageOk = !!page && (!expectLang || page.language === expectLang)
         && (TIMEZONE === 'system' || page.tz === TIMEZONE)
         && Array.isArray(page.languages) && !page.languages.some(l => l.includes(';'))
+        && page.href.startsWith('sbrowser://newtab') && page.title === 'Новая вкладка'
         && (!page.secure || !!(page.brands && page.brands.includes('Google Chrome')))
         && !/Electron|SBrowser/i.test(page.ua);
       const res = {

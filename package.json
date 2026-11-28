@@ -33,7 +33,8 @@
       "preload.js",
       "tab-preload.js",
       "ui/**",
-      "lib/**"
+      "lib/**",
+      "newtab/**"
     ],
     "win": {
       "target": "nsis",
