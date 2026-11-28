@@ -124,6 +124,17 @@
   </div>
 
   <div class="card">
+    <h2>Вход в Google</h2>
+    <label for="googleLogin">Как представляться странице входа Google</label>
+    <select id="googleLogin">
+      <option value="chrome">Как Google Chrome (рекомендуется)</option>
+      <option value="firefox">Как Firefox</option>
+      <option value="off">Без маскировки</option>
+    </select>
+    <div class="hint">Google не пускает в аккаунт «встроенные» браузеры. Если видите «This browser or app may not be secure», попробуйте другой режим. Действует только на accounts.google.com.</div>
+  </div>
+
+  <div class="card">
     <h2>Перевод</h2>
     <label class="check"><input type="checkbox" id="autoTranslate"> Автоматически переводить сайты на другом языке</label>
     <label for="translateTo">Переводить на</label>

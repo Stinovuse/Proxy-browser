@@ -24,6 +24,7 @@ api.invoke('settings:get').then(c => {
   $('noCache').checked = c.noCache; $('block3p').checked = c.block3p;
   $('timezone').value = c.timezone || 'Asia/Singapore';
   $('browserLang').value = c.browserLang || 'auto';
+  $('googleLogin').value = c.googleLogin || 'chrome';
   tzLocales = c.tzLocales || {};
   $('autoTranslate').checked = c.autoTranslate !== false;
   $('translateTo').value = c.translateTo || 'ru';
@@ -42,7 +43,7 @@ $('save').onclick = async () => {
     type: $('type').value, host: $('host').value, port: $('port').value,
     user: $('user').value, pass: $('pass').value, incognito: $('incognito').checked,
     noCache: $('noCache').checked, block3p: $('block3p').checked,
-    timezone: $('timezone').value, browserLang: $('browserLang').value,
+    timezone: $('timezone').value, browserLang: $('browserLang').value, googleLogin: $('googleLogin').value,
     autoTranslate: $('autoTranslate').checked, translateTo: $('translateTo').value,
   });
   if (r && !r.ok) $('err').textContent = r.error;

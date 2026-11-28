@@ -249,7 +249,7 @@ async function setupSession() {
     // Вход в Google: заголовки как у Firefox (страница или запросы самой страницы входа)
     let top = '';
     try { top = d.webContents ? d.webContents.getURL() : ''; } catch {}
-    if (isGoogleAuthUrl(d.url) || isGoogleAuthUrl(top)) {
+    if (GOOGLE_LOGIN === 'firefox' && (isGoogleAuthUrl(d.url) || isGoogleAuthUrl(top))) {
       for (const k of Object.keys(h)) if (/^sec-ch-ua/i.test(k) || /^user-agent$/i.test(k)) delete h[k];
       h['User-Agent'] = firefoxUA();
       return cb({ requestHeaders: h });
@@ -633,6 +633,9 @@ function lockInternalPage(wc) {
 // внутренним отличиям от настоящего Chrome. Страницам входа Google показываем
 // Firefox: его Google проверяет иначе. Остальные сайты по-прежнему видят Chrome.
 const GOOGLE_AUTH_HOSTS = new Set(['accounts.google.com', 'accounts.youtube.com']);
+// Режим входа: 'chrome' — выглядеть как настоящий Google Chrome (по умолчанию),
+// 'firefox' — как Firefox, 'off' — без маскировки
+const GOOGLE_LOGIN = cfg && ['chrome', 'firefox', 'off'].includes(cfg.googleLogin) ? cfg.googleLogin : 'chrome';
 function isGoogleAuthUrl(u) {
   try { return GOOGLE_AUTH_HOSTS.has(new URL(u).hostname); } catch { return false; }
 }
@@ -642,13 +645,58 @@ function firefoxUA() {
   return `Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:${v}.0) Gecko/20100101 Firefox/${v}.0`;
 }
 
-// Скрипт до загрузки страницы: на страницах входа Google убираем объекты,
-// которых нет в Firefox (иначе подмена видна). На остальных сайтах ничего не делает.
+// Скрипты до загрузки страницы — работают только на страницах входа Google.
+const GOOGLE_HOSTS_JSON = JSON.stringify([...GOOGLE_AUTH_HOSTS]);
+// Firefox: убираем объекты, которых в Firefox нет
 const GOOGLE_FF_SHIM = `(() => { try {
-  if (!${JSON.stringify([...GOOGLE_AUTH_HOSTS])}.includes(location.hostname)) return;
+  if (!${GOOGLE_HOSTS_JSON}.includes(location.hostname)) return;
   try { delete Navigator.prototype.userAgentData; } catch (e) {}
   try { delete window.chrome; } catch (e) {}
 } catch (e) {} })();`;
+// Chrome: добавляем объекты настоящего Google Chrome, которых нет в Electron
+// (chrome.app, chrome.runtime, chrome.csi, chrome.loadTimes), и маскируем их как встроенные
+const GOOGLE_CHROME_SHIM = `(() => { try {
+  if (!${GOOGLE_HOSTS_JSON}.includes(location.hostname)) return;
+  const nat = new WeakMap();
+  const mk = (name, fn) => { nat.set(fn, 'function ' + name + '() { [native code] }'); return fn; };
+  const origTS = Function.prototype.toString;
+  const ts = mk('toString', function toString() { return nat.has(this) ? nat.get(this) : origTS.call(this); });
+  Object.defineProperty(Function.prototype, 'toString', { value: ts, writable: true, configurable: true });
+  const c = window.chrome || {};
+  if (!c.app) c.app = {
+    isInstalled: false,
+    InstallState: { DISABLED: 'disabled', INSTALLED: 'installed', NOT_INSTALLED: 'not_installed' },
+    RunningState: { CANNOT_RUN: 'cannot_run', READY_TO_RUN: 'ready_to_run', RUNNING: 'running' },
+    getDetails: mk('getDetails', function () { return null; }),
+    getIsInstalled: mk('getIsInstalled', function () { return false; }),
+    runningState: mk('runningState', function () { return 'cannot_run'; }),
+  };
+  if (!c.runtime && location.protocol === 'https:') c.runtime = {
+    OnInstalledReason: { CHROME_UPDATE: 'chrome_update', INSTALL: 'install', SHARED_MODULE_UPDATE: 'shared_module_update', UPDATE: 'update' },
+    OnRestartRequiredReason: { APP_UPDATE: 'app_update', OS_UPDATE: 'os_update', PERIODIC: 'periodic' },
+    PlatformArch: { ARM: 'arm', ARM64: 'arm64', MIPS: 'mips', MIPS64: 'mips64', X86_32: 'x86-32', X86_64: 'x86-64' },
+    PlatformNaclArch: { ARM: 'arm', MIPS: 'mips', MIPS64: 'mips64', X86_32: 'x86-32', X86_64: 'x86-64' },
+    PlatformOs: { ANDROID: 'android', CROS: 'cros', FUCHSIA: 'fuchsia', LINUX: 'linux', MAC: 'mac', OPENBSD: 'openbsd', WIN: 'win' },
+    RequestUpdateCheckStatus: { NO_UPDATE: 'no_update', THROTTLED: 'throttled', UPDATE_AVAILABLE: 'update_available' },
+    connect: mk('connect', function () { throw new TypeError("Error in invocation of runtime.connect(optional string extensionId, optional object connectInfo): chrome.runtime.connect() called from a webpage must specify an Extension ID (string) for its first argument."); }),
+    sendMessage: mk('sendMessage', function () { throw new TypeError("Error in invocation of runtime.sendMessage(optional string extensionId, any message, optional object options, optional function callback): chrome.runtime.sendMessage() called from a webpage must specify an Extension ID (string) for its first argument."); }),
+    id: undefined,
+  };
+  if (!c.csi) c.csi = mk('csi', function () {
+    const t = performance.timing;
+    return { onloadT: t.domContentLoadedEventEnd, startE: t.navigationStart, pageT: performance.now(), tran: 15 };
+  });
+  if (!c.loadTimes) c.loadTimes = mk('loadTimes', function () {
+    const t = performance.timing, n = performance.getEntriesByType('navigation')[0] || {};
+    return { requestTime: t.navigationStart / 1000, startLoadTime: t.navigationStart / 1000, commitLoadTime: t.responseStart / 1000,
+      finishDocumentLoadTime: t.domContentLoadedEventEnd / 1000, finishLoadTime: t.loadEventEnd / 1000,
+      firstPaintTime: t.responseStart / 1000, firstPaintAfterLoadTime: 0, navigationType: 'Other',
+      wasFetchedViaSpdy: n.nextHopProtocol === 'h2', wasNpnNegotiated: true, npnNegotiatedProtocol: n.nextHopProtocol || 'h2',
+      wasAlternateProtocolAvailable: false, connectionInfo: n.nextHopProtocol || 'h2' };
+  });
+  if (!window.chrome) Object.defineProperty(window, 'chrome', { value: c, writable: true, configurable: true, enumerable: true });
+} catch (e) {} })();`;
+const GOOGLE_SHIM = GOOGLE_LOGIN === 'firefox' ? GOOGLE_FF_SHIM : GOOGLE_LOGIN === 'chrome' ? GOOGLE_CHROME_SHIM : null;
 
 function setupEmulation(wc, initialUrl) {
   const dbg = wc.debugger;
@@ -663,7 +711,7 @@ function setupEmulation(wc, initialUrl) {
     TIMEZONE !== 'system' ? send('Emulation.setTimezoneOverride', { timezoneId: TIMEZONE }, sid) : null,
     LOCALE ? send('Emulation.setLocaleOverride', { locale: LOCALE }, sid) : null,
     send('Emulation.setUserAgentOverride', uaOverride, sid),
-    send('Page.addScriptToEvaluateOnNewDocument', { source: GOOGLE_FF_SHIM }, sid),
+    GOOGLE_SHIM ? send('Page.addScriptToEvaluateOnNewDocument', { source: GOOGLE_SHIM }, sid) : null,
     send('Target.setAutoAttach', { autoAttach: true, waitForDebuggerOnStart: true, flatten: true }, sid),
   ]).then(() => { if (sid) send('Runtime.runIfWaitingForDebugger', {}, sid); });
   try { dbg.attach('1.3'); } catch { return; }
@@ -675,7 +723,7 @@ function setupEmulation(wc, initialUrl) {
   // На страницах входа Google — User-Agent Firefox (без Client Hints, как у настоящего Firefox)
   let firefoxMode = false;
   const setMode = (url) => {
-    const want = isGoogleAuthUrl(url);
+    const want = GOOGLE_LOGIN === 'firefox' && isGoogleAuthUrl(url);
     if (want === firefoxMode) return;
     firefoxMode = want;
     const o = want ? { userAgent: firefoxUA(), platform: 'Win32' } : uaOverride;
@@ -1172,7 +1220,7 @@ ipcHandle('settings:get', () => {
     user: c.user || '', hasPass: !!c.pass, incognito: !!c.incognito,
     noCache: c.noCache !== false, block3p: c.block3p !== false,
     timezone: TIMEZONE, autoTranslate: TR_AUTO, translateTo: TR_LANG,
-    browserLang: LANG_MODE, tzLocales: TZ_LOCALE,
+    browserLang: LANG_MODE, tzLocales: TZ_LOCALE, googleLogin: GOOGLE_LOGIN,
     version: app.getVersion(),
     configured,
   };
@@ -1194,6 +1242,7 @@ ipcHandle('settings:save', (_e, data) => {
     timezone: (data.timezone === 'system' || TZ_RE.test(data.timezone || '')) ? data.timezone : TZ_DEFAULT,
     tzV2: true,
     browserLang: (data.browserLang === 'system' || LOCALE_RE.test(data.browserLang || '')) ? data.browserLang : 'auto',
+    googleLogin: ['chrome', 'firefox', 'off'].includes(data.googleLogin) ? data.googleLogin : 'chrome',
     autoTranslate: data.autoTranslate !== false,
     translateTo: TR_LANGS.includes(data.translateTo) ? data.translateTo : 'ru',
   };
