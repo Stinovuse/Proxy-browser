@@ -978,6 +978,10 @@ let ipInfo = null; // { ip, cc, country, tz } — запрашивается т�
 
 function proxyErrorText(e) {
   const m = String((e && e.message) || e);
+  // Тип «HTTPS», а прокси не умеет защищённое соединение с собой — самая частая путаница
+  if (cfg && cfg.type === 'https' && /SSL|TLS|CERT|PROXY_CONNECTION_FAILED|CONNECTION_CLOSED|CONNECTION_RESET|EMPTY_RESPONSE/i.test(m)) {
+    return 'Прокси не поддерживает тип HTTPS. Почти все прокси, даже «HTTP/HTTPS», — это тип HTTP: выберите его в настройках';
+  }
   if (/PROXY_AUTH|407/.test(m)) return 'Неверный логин или пароль прокси';
   if (/PROXY_CONNECTION_FAILED|CONNECTION_REFUSED/.test(m)) return 'Прокси не отвечает (проверьте адрес и порт)';
   if (/TUNNEL_CONNECTION_FAILED|SOCKS/.test(m)) return 'Прокси отказал в подключении';

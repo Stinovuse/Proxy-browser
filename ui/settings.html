@@ -56,7 +56,7 @@
     <select id="type">
       <option value="socks5">SOCKS5</option>
       <option value="http">HTTP</option>
-      <option value="https">HTTPS</option>
+      <option value="https">HTTPS (шифрованное соединение с прокси — редко)</option>
     </select>
     <div class="row">
       <div><label for="host">Адрес</label><input id="host" placeholder="1.2.3.4 или proxy.example.com"></div>
@@ -67,6 +67,7 @@
       <div><label for="pass">Пароль</label><input id="pass" type="password" autocomplete="off"></div>
     </div>
     <div class="hint" id="passhint"></div>
+    <div class="hint">Прокси, которые продают как «HTTP/HTTPS», — это тип <b>HTTP</b>. Тип HTTPS выбирайте, только если провайдер прямо указал HTTPS-порт с шифрованием.</div>
     <div class="hint">Логин и пароль работают только с HTTP/HTTPS-прокси — это ограничение Chromium. SOCKS4 не поддерживается: он требует определять адреса сайтов на вашем компьютере, а это утечка DNS.</div>
   </div>
 
